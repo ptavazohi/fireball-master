@@ -49,65 +49,149 @@ module M_non_adiabatic_coupling
 
      !             integer :: size
      !             real, allocatable :: m(:,:)
+     ! The following are moved from the module M_density_MDET to here
+
+     !$ volatile bbnkre, bbnkim, blowim, blowre, cape, rho
+
+     integer :: nkpoints, norbitals
+     real :: qztot
+
+     ! These arrays contain the coefficients to calculate the density matrix
+     ! and the Lowdin charges:
+     real, dimension (:, :, :), allocatable :: bbnkre
+     real, dimension (:, :, :), allocatable :: bbnkim
+     real, dimension (:, :, :), allocatable :: blowim
+     real, dimension (:, :, :), allocatable :: blowre
+     real, dimension (:, :), allocatable :: eigen_k
+
+     real, dimension (:, :, :), allocatable :: bbnkre_old !vlada
+     real, dimension (:, :, :), allocatable :: blowre_old !vlada
+     ! These arrays store the densities.
+     !         real, dimension (:, :, :, :), allocatable :: cape
+     !         real, dimension (:, :, :, :), allocatable :: rho
+     !         real, dimension (:, :, :, :), allocatable :: rhoPP
+     ! jel-grid
+     !         real, dimension (:, :), allocatable :: rhoA
+     !         real, dimension (:, :, :, :), allocatable :: rho_old
+     ! end jel-grid
+
+     ! These arrays store stuff related to the average density.
+     ! Used in the OLSXC exchange-correlation interactions.
+     !         real, dimension (:, :, :), allocatable :: rho_on
+     !         real, dimension (:, :, :), allocatable :: rhoi_on
+     !         real, dimension (:, :, :, :), allocatable :: rho_off
+     !         real, dimension (:, :, :, :), allocatable :: rhoij_off
+     !         real, dimension (:, :, :), allocatable :: arho_on
+     !         real, dimension (:, :, :), allocatable :: arhoi_on
+     !         real, dimension (:, :, :, :), allocatable :: arho_off
+     !         real, dimension (:, :, :, :), allocatable :: arhoij_off
+
+     ! JOM-nonadiabatic
+     real, dimension ( :, :), allocatable :: foccupy_na
+     integer, dimension ( :, :), allocatable :: ioccupy_na
+     real, dimension ( :, :), allocatable :: foccupy_na_TS
+     integer, dimension ( :, :), allocatable :: ioccupy_na_TS
 
   end type T_NAC_vars
 
 contains
 
-  subroutine NAC_initialize(n, natoms, numorb_max, neigh_max, neighPP_max, ztot, nkpoints)
+  subroutine NAC_initialize(nac_vars, natoms, numorb_max, neigh_max, neighPP_max, ztot, nkpoints)
 
     !Arguments
-    type(T_NAC_vars), intent(inout) :: n
+    type(T_NAC_vars), intent(inout) :: nac_vars
     integer, intent(in) :: natoms, numorb_max, neigh_max, neighPP_max, nkpoints
     real, intent(in) :: ztot
 
     integer istate
     integer stage
     integer iband
+    integer :: ikpoint, iband
+    integer :: nfermi
+    integer numorb_max,norbitals
 
-    open (unit = n%nac_inpfile, file = 'mdet.inp', status = 'old')
+    norbitals = numorb_max
+    open (unit = nac_vars%nac_inpfile, file = 'mdet.inp', status = 'old')
     ! Note : ntransitions is equal to nele in the old code
-    read (n%nac_inpfile,*) n%ntransitions
+    read (nac_vars%nac_inpfile,*) n%ntransitions
     stage = 1
     ! allocating map_ks, map_proj and iocc, these are in the nonadiabatic.f90 module in the old code, i have to create them here later
-    allocate(n%map_ks(n%ntransitions))
-    allocate(n%map_proj(n%ntransitions))
-    allocate(n%iocc(n%ntransitions))
+    allocate(nac_vars%map_ks(nac_vars%ntransitions))
+    allocate(nac_vars%map_proj(nac_vars%ntransitions))
+    allocate(nac_vars%iocc(nac_vars%ntransitions))
     ! Reading the transitions from mdet.inp file
 
-    do istate = 1, n%ntransitions
-       read (n%nac_inpfile,*) iband, n%iocc(istate)
-       n%map_ks(istate) = iband
+    do istate = 1, nac_vars%ntransitions
+       read (nac_vars%nac_inpfile,*) iband, nac_vars%iocc(istate)
+       nac_vars%map_ks(istate) = iband
     end do
-    close(n%nac_inpfile)
+    close(nac_vars%nac_inpfile)
 
     ! Allocating variables gks, dnac, don't know what they do yet, these variables are in old nonadiabatic.f90 module
-    allocate (n%gks(3, natoms,n%ntransitions,n%ntransitions))
-    allocate (n%gks_old(3, natoms,n%ntransitions,n%ntransitions))
-    allocate (n%dnac(n%ntransitions, n%ntransitions))
-    allocate (n%dnac_old(n%ntransitions, n%ntransitions))
+    allocate (nac_vars%gks(3, natoms,nac_vars%ntransitions,nac_vars%ntransitions))
+    allocate (nac_vars%gks_old(3, natoms,nac_vars%ntransitions,nac_vars%ntransitions))
+    allocate (nac_vars%dnac(nac_vars%ntransitions, nac_vars%ntransitions))
+    allocate (nac_vars%dnac_old(nac_vars%ntransitions, nac_vars%ntransitions))
    
  ! Need allocation for imdet = 2, deal with it later
 
     ! we need to work with foccupy and ioccupy, they are in module density.f90, i will come back to them when I understand the reason of part
 
     ! Allocations
-    allocate (n%gover (3, numorb_max, numorb_max, neigh_max, natoms))
-    allocate (n%gover1c (3, numorb_max, numorb_max))
-    allocate (n%gh_2c    (3, numorb_max, numorb_max, neigh_max, natoms))
-    allocate (n%gh_atm   (3, numorb_max, numorb_max, neigh_max, natoms))
-    allocate (n%gh_3c    (3, natoms, numorb_max, numorb_max, neigh_max, natoms))
-    allocate (n%gh_pp_otr (3, numorb_max, numorb_max, neighPP_max, natoms))
-    allocate (n%gh_pp_otl (3, numorb_max, numorb_max, neighPP_max, natoms))
-    allocate (n%gh_pp_atm (3, numorb_max, numorb_max, neighPP_max, natoms))
-    allocate (n%gh_pp_3c (3, natoms, numorb_max, numorb_max, neighPP_max**2, natoms))
+    allocate (nac_vars%gover (3, numorb_max, numorb_max, neigh_max, natoms))
+    allocate (nac_vars%gover1c (3, numorb_max, numorb_max))
+    allocate (nac_vars%gh_2c    (3, numorb_max, numorb_max, neigh_max, natoms))
+    allocate (nac_vars%gh_atm   (3, numorb_max, numorb_max, neigh_max, natoms))
+    allocate (nac_vars%gh_3c    (3, natoms, numorb_max, numorb_max, neigh_max, natoms))
+    allocate (nac_vars%gh_pp_otr (3, numorb_max, numorb_max, neighPP_max, natoms))
+    allocate (nac_vars%gh_pp_otl (3, numorb_max, numorb_max, neighPP_max, natoms))
+    allocate (nac_vars%gh_pp_atm (3, numorb_max, numorb_max, neighPP_max, natoms))
+    allocate (nac_vars%gh_pp_3c (3, natoms, numorb_max, numorb_max, neighPP_max**2, natoms))
 
-    allocate(n%c_na(n%ntransitions,n%ntransitions,nkpoints))
-    allocate(n%ratom_old(3,natoms))
-    allocate(n%vatom_old(3,natoms))
-    allocate(eigen_old(numorb_max,nkpoints))
-    allocate(eigen_1(n%ntransitions,nkpoints))
-    allocate(eigen_0(n%ntransitions,nkpoints))
+    allocate(nac_vars%c_na(nac_vars%ntransitions,nac_vars%ntransitions,nkpoints))
+    allocate(nac_vars%ratom_old(3,natoms))
+    allocate(nac_vars%vatom_old(3,natoms))
+    allocate(nac_vars%eigen_old(numorb_max,nkpoints))
+    allocate(nac_vars%eigen_1(nac_vars%ntransitions,nkpoints))
+    allocate(nac_vars%eigen_0(nac_vars%ntransitions,nkpoints))
+    ! MOved from M_density_MDET.f90 to here
+
+    nac_vars%norbitals = norbitals
+    nac_vars%nkpoints = nkpoints
+    nac_vars%qztot = qztot
+
+    allocate (nac_vars%bbnkre(norbitals, norbitals, nkpoints))
+    allocate (nac_vars%blowre(norbitals, norbitals, nkpoints))
+    allocate (nac_vars%bbnkre_old(norbitals, norbitals, nkpoints))
+    allocate (nac_vars%blowre_old(norbitals, norbitals, nkpoints))
+
+    allocate (nac_vars%eigen_k(norbitals, nkpoints))
+
+    allocate (nac_vars%foccupy_na(norbitals, nkpoints))
+    allocate (nac_vars%ioccupy_na(norbitals, nkpoints))
+
+    allocate (nac_vars%foccupy_na_TS(norbitals, nkpoints))
+    allocate (nac_vars%ioccupy_na_TS(norbitals, nkpoints))
+
+    nfermi = int(qztot) / 2
+
+    do ikpoint = 1, nkpoints
+       do iband = 1, nfermi
+          nac_vars%foccupy_na (iband,ikpoint) = 1.0d0
+          nac_vars%ioccupy_na (iband, ikpoint) = 2
+          nac_vars%foccupy_na_TS (iband,ikpoint) = 1.0d0
+          nac_vars%ioccupy_na_TS (iband, ikpoint) = 2
+       end do
+    end do
+    if (int(qztot) .gt. 2*nfermi) then
+       do ikpoint = 1, nkpoints
+          nac_vars%ioccupy_na(nfermi+1,ikpoint) = 1
+          nac_vars%foccupy_na (iband,ikpoint) = 0.5d0
+          nac_vars%ioccupy_na_TS(nfermi+1,ikpoint) = 1
+          nac_vars%foccupy_na_TS (iband,ikpoint) = 0.5d0
+       end do
+    end if
+
     call NAC_io(n, stage)
 
   end subroutine NAC_initialize
@@ -136,6 +220,20 @@ contains
     deallocate(n%eigen_1)
     deallocate(n%eigen_0)
     deallocate(n%eigen_old)
+    ! The following were moved from M_density_MDET.f90
+    deallocate (n%bbnkre)
+    deallocate (n%blowre)
+    deallocate (n%bbnkre_old)
+    deallocate (n%blowre_old)
+
+    deallocate (n%eigen_k)
+
+    deallocate (n%foccupy_na)
+    deallocate (n%ioccupy_na)
+
+    deallocate (n%foccupy_na_TS)
+    deallocate (n%ioccupy_na_TS)
+
 
   end subroutine NAC_finalize
 
@@ -186,6 +284,76 @@ contains
     ! Need to use the HDF5
 
   end subroutine NAC_fileio
+  subroutine NAC_change_occupations(nac_vars)
+    type(T_NAC_vars), intent(out) :: nac_vars
+
+    integer ikpoint, iele, iband
+
+    do ikpoint = 1, nac_vars%nkpoints
+       do iele = 1, nac_vars%ntransitions
+          iband = nac_vars%map_ks(iele)
+          nac_vars%foccupy_na(iband,ikpoint) = nac_vars%iocc(iele)*0.5d0
+          nac_vars%ioccupy_na(iband,ikpoint) = nac_vars%iocc(iele)
+          nac_vars%foccupy_na_TS(iband,ikpoint) = nac_vars%iocc(iele)*0.5d0
+          nac_vars%ioccupy_na_TS(iband,ikpoint) = nac_vars%iocc(iele)
+       end do
+    end do
+
+  end subroutine NAC_change_occupations
+
+  subroutine NAC_density_check(this, s)
+    type(T_density_MDET), intent(out) :: this
+    type(T_structure), intent(in) :: s
+    real :: qcharge = 0.0d0
+    integer :: ikpoint, iband
+
+    do ikpoint = 1, this%nkpoints
+       do iband = 1, this%norbitals
+          if (ioccupy_na(iband,ikpoint) .ne. 0) then
+             qcharge = qcharge + 2.0d0*foccupy_na(iband,ikpoint)*s%kpoints(ikpoint)%weight
+          end if
+       end do
+    end do
+    if (abs(qcharge - this%qztot) .gt. tol) then
+       write (*,*) '          qcharge = ', qcharge
+       write (*,*) '          qztot = ', this%qztot
+       write (*,*) 'must stop in subroutine init_mdet 1'
+       stop
+    end if
+
+  end subroutine NAC_density_check
+
+
+  subroutine NAC_dij(nac_vars,s)
+    type(T_NAC_vars), intent(inout) :: nac_vars
+    type(T_structure), intent(in) :: s
+    type(T_assemble_neighbors), pointer :: pkinetic
+    type(T_assemble_neighbors), pointer :: pvna
+    type(T_assemble_neighbors), pointer :: pvxc
+    type(T_assemble_neighbors), pointer :: pewaldsr
+    type(T_assemble_neighbors), pointer :: pewaldlr
+    type(T_assemble_block), pointer :: pK_neighbors
+    type(T_assemble_block), pointer :: pvna_neighbors
+    integer :: iatom, ineigh, imu, inu
+
+
+  do iband=1, nac_vars%ntransitions
+    do jband=1, nac_vars%ntransitions
+
+
+    do iatom=1,s%natoms
+      do ineigh=1,s%neighbors(iatom)%neighn
+        in1 = s%atom(iatom)%imass
+        do imu=1,species(in1)%norb_max
+            jatom = s%neighbors(iatom)%neigh_j(ineigh)
+            in2 = s%neighbors(jatom)%imass
+            do inu=1,species(in2)%norb_max
+              cmunu=s%kpoints(1)%c(mmu,iband)
+
+
+
+  end subroutine NAC_dij
+
 
   subroutine NACs(nac_vars, den_vars, s)
     type(T_NAC_vars), intent(inout) :: nac_vars
@@ -317,7 +485,7 @@ contains
                   step1 = phase*den_vars%bbnkre(mmu,nac_vars%map_ks(iband),ikpoint)
                   do inu = 1, norb_nu
                     nnu = inu + degelec(jatom)
-                    step2 = astep1*den_vars%bbnkre(nnu,nac_vars%map_ks(iband),ikpoint)
+                    step2 = step1*den_vars%bbnkre(nnu,nac_vars%map_ks(iband),ikpoint)
                     cmunu = real(step2)
                     nac_vars%gks(:,iatom,iband,jband) = nac_vars%gks(:,iatom,iband,jband)+ &
                     & cmunu*(- nac_vars%gh_pp_otl(:,imu,inu,ineigh,iatom))
@@ -432,6 +600,7 @@ contains
     type(T_density_MDET), intent(in) :: den_vars
     type(T_structure), intent(in) :: s
     type(T_species), intent(in) :: species(:)
+
     do iatom = 1, s%natoms
       r1 = nac_vars%ratom_old
       rcutoff_i = 0.0d0
