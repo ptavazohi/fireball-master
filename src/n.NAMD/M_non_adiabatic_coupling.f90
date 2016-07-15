@@ -5,93 +5,20 @@ module M_non_adiabatic_coupling
 
   ! Implicit none is a good idea, always
   implicit none
-
+  type T_NAC_den
+     type(T_assemble_neighbors), pointer :: tdenmat (:)
+  end type T_NAC_den
   type T_NAC_vars
      integer ::  nac_inpfile = 123
      integer :: ntransitions
-     ! Matrix elements involving the Gradients
-     integer :: nddt 
-     real, allocatable :: gover(:,:,:,:,:)
-     real, allocatable :: gover1c(:,:,:)
-     real, allocatable :: gh_2c(:,:,:,:,:)
-     real, allocatable :: gh_atm(:,:,:,:,:)
-     real, allocatable :: gh_3c(:,:,:,:,:,:)
-     real, allocatable :: gh_pp_otr(:,:,:,:,:)
-     real, allocatable :: gh_pp_otl(:,:,:,:,:)
-     real, allocatable :: gh_pp_atm(:,:,:,:,:)
-     real, allocatable :: gh_pp_3c(:,:,:,:,:,:)
-     real, allocatable :: gks (:, :, :, :)
-     real, allocatable :: gks_old (:, :, :, :)
-     real, allocatable :: gks_1(:, :, :, :)
-     real, allocatable :: gks_0(:, :, :, :)
-
-     ! numeric derivative (g*v)
-     real, allocatable :: dnac (:,:)
-     real, allocatable :: dnac_old (:,:)
-     ! maps of lists of evolving KS-states:
-     integer, allocatable :: map_ks (:)
-     integer, allocatable :: map_proj (:)
-     integer, allocatable :: iocc(:)
+     real, allocatable :: c_old(:,:)
+     real, allocatable :: suma(:,:)
+     real, allocatable :: sumb(:,:)
      complex, allocatable :: c_na(:,:,:)
-
-     real, allocatable :: ratom_old(:,:)
-     real, allocatable :: vatom_old(:,:)
-     real, allocatable :: eigen_old(:,:)
-     real, allocatable ::eigen_0(:,:) ! these eigens can be moved to density_MDET
-     real, allocatable :: eigen_1(:,:)
-
- 
-     real :: tolnac = 0.0001d0
-
-     ! Include all the variables that are exclusive for NAC
-     ! Arrays should be allocatable in priciple, except for
-     ! those you know their size in advance
-
-     !             integer :: size
-     !             real, allocatable :: m(:,:)
-     ! The following are moved from the module M_density_MDET to here
-
-     !$ volatile bbnkre, bbnkim, blowim, blowre, cape, rho
-
-     integer :: nkpoints, norbitals
-     real :: qztot
-
-     ! These arrays contain the coefficients to calculate the density matrix
-     ! and the Lowdin charges:
-     real, dimension (:, :, :), allocatable :: bbnkre
-     real, dimension (:, :, :), allocatable :: bbnkim
-     real, dimension (:, :, :), allocatable :: blowim
-     real, dimension (:, :, :), allocatable :: blowre
-     real, dimension (:, :), allocatable :: eigen_k
-
-     real, dimension (:, :, :), allocatable :: bbnkre_old !vlada
-     real, dimension (:, :, :), allocatable :: blowre_old !vlada
-     ! These arrays store the densities.
-     !         real, dimension (:, :, :, :), allocatable :: cape
-     !         real, dimension (:, :, :, :), allocatable :: rho
-     !         real, dimension (:, :, :, :), allocatable :: rhoPP
-     ! jel-grid
-     !         real, dimension (:, :), allocatable :: rhoA
-     !         real, dimension (:, :, :, :), allocatable :: rho_old
-     ! end jel-grid
-
-     ! These arrays store stuff related to the average density.
-     ! Used in the OLSXC exchange-correlation interactions.
-     !         real, dimension (:, :, :), allocatable :: rho_on
-     !         real, dimension (:, :, :), allocatable :: rhoi_on
-     !         real, dimension (:, :, :, :), allocatable :: rho_off
-     !         real, dimension (:, :, :, :), allocatable :: rhoij_off
-     !         real, dimension (:, :, :), allocatable :: arho_on
-     !         real, dimension (:, :, :), allocatable :: arhoi_on
-     !         real, dimension (:, :, :, :), allocatable :: arho_off
-     !         real, dimension (:, :, :, :), allocatable :: arhoij_off
-
-     ! JOM-nonadiabatic
-     real, dimension ( :, :), allocatable :: foccupy_na
-     integer, dimension ( :, :), allocatable :: ioccupy_na
-     real, dimension ( :, :), allocatable :: foccupy_na_TS
-     integer, dimension ( :, :), allocatable :: ioccupy_na_TS
-
+     type(T_forces), pointer :: dij(:,:,:)
+     type(T_NAC_den), pointer :: band(:,:)
+     
+     type(T_vector), pointer :: ratom_old(:)
   end type T_NAC_vars
 
 contains
@@ -113,14 +40,17 @@ contains
     norbitals = numorb_max
     open (unit = nac_vars%nac_inpfile, file = 'mdet.inp', status = 'old')
     ! Note : ntransitions is equal to nele in the old code
-    read (nac_vars%nac_inpfile,*) n%ntransitions
+    read (nac_vars%nac_inpfile,*) nac_vars%ntransitions
+    ntransitions = nac_vars%ntransitions
     stage = 1
+    allocate(nac_vars%dij(ntransitions,ntransitions,s%natoms))
+    allocate(nac_vars%band(ntransitions,ntransitions))
+    allocate(nac_vars%c_na(ntransition,ntransitions,1))
     ! allocating map_ks, map_proj and iocc, these are in the nonadiabatic.f90 module in the old code, i have to create them here later
     allocate(nac_vars%map_ks(nac_vars%ntransitions))
     allocate(nac_vars%map_proj(nac_vars%ntransitions))
     allocate(nac_vars%iocc(nac_vars%ntransitions))
     ! Reading the transitions from mdet.inp file
-
     do istate = 1, nac_vars%ntransitions
        read (nac_vars%nac_inpfile,*) iband, nac_vars%iocc(istate)
        nac_vars%map_ks(istate) = iband
@@ -199,42 +129,9 @@ contains
   subroutine NAC_finalize(n)
     implicit none
     type(T_NAC_vars), target :: n
-
-    deallocate(n%gover)
-    deallocate(n%gover1c)
-    deallocate(n%gh_2c)
-    deallocate(n%gh_atm)
-    deallocate(n%gh_3c)
-    deallocate(n%gh_pp_otr)
-    deallocate(n%gh_pp_otl)
-    deallocate(n%gh_pp_atm)
-    deallocate(n%gh_pp_3c)
-    deallocate(n%gks)
-    deallocate(n%gks_old)
-    deallocate(n%dnac)
-    deallocate(n%dnac_old)
-    deallocate(n%map_ks)
-    deallocate(n%map_proj)
-    deallocate(n%iocc)
-    deallocate(n%c_na)
-    deallocate(n%eigen_1)
-    deallocate(n%eigen_0)
-    deallocate(n%eigen_old)
-    ! The following were moved from M_density_MDET.f90
-    deallocate (n%bbnkre)
-    deallocate (n%blowre)
-    deallocate (n%bbnkre_old)
-    deallocate (n%blowre_old)
-
-    deallocate (n%eigen_k)
-
-    deallocate (n%foccupy_na)
-    deallocate (n%ioccupy_na)
-
-    deallocate (n%foccupy_na_TS)
-    deallocate (n%ioccupy_na_TS)
-
-
+    deallocate(nac_vars%dij)
+  
+    
   end subroutine NAC_finalize
 
 
@@ -324,426 +221,791 @@ contains
   end subroutine NAC_density_check
 
 
-  subroutine NAC_dij(nac_vars,s)
+  subroutine NAC_build_dij(nac_vars,s)
     type(T_NAC_vars), intent(inout) :: nac_vars
     type(T_structure), intent(in) :: s
-    type(T_assemble_neighbors), pointer :: pkinetic
-    type(T_assemble_neighbors), pointer :: pvna
-    type(T_assemble_neighbors), pointer :: pvxc
-    type(T_assemble_neighbors), pointer :: pewaldsr
-    type(T_assemble_neighbors), pointer :: pewaldlr
-    type(T_assemble_block), pointer :: pK_neighbors
-    type(T_assemble_block), pointer :: pvna_neighbors
-    integer :: iatom, ineigh, imu, inu
+
+!!$       implicit none
+!!$        include '../include/constants.h'
+!!$
+!!$! Argument Declaration and Description
+!!$! ===========================================================================
+!!$        type(T_structure), target :: s            !< the structure to be used
+!!$
+!!$! Local Parameters and Data Declaration
+!!$! ===========================================================================
+!!$! None
+!!$
+!!$! Local Variable Declaration and Description
+!!$! ===========================================================================
+!!$        integer iatom                   !< counter over atoms/neighbors
+!!$
+!!$! Allocate Arrays
+!!$! ===========================================================================
+!!$! Forces are stored in a Type with each piece, this makes acessing them and use
+!!$! pretty easy across the game.
+!!$        allocate (s%forces (s%natoms))
+!!$
+!!$! Procedure
+!!$! ===========================================================================
+!!$! Initialize forces to zero
+!!$        do iatom = 1, s%natoms
+!!$          ! band-structure interactions
+!!$          s%forces(iatom)%kinetic = 0.0d0
+!!$          s%forces(iatom)%vna = 0.0d0
+!!$          s%forces(iatom)%vxc = 0.0d0
+!!$          s%forces(iatom)%vnl = 0.0d0
+!!$          s%forces(iatom)%ewald = 0.0d0
+!!$
+!!$          ! corrections to the force
+!!$          s%forces(iatom)%usr = 0.0d0
+!!$          s%forces(iatom)%pulay = 0.0d0
+!!$
+!!$          ! three-center interactions
+!!$          s%forces(iatom)%f3naa = 0.0d0
+!!$          s%forces(iatom)%f3nab = 0.0d0
+!!$          s%forces(iatom)%f3nac = 0.0d0
+!!$          s%forces(iatom)%f3xca = 0.0d0
+!!$          s%forces(iatom)%f3xcb = 0.0d0
+!!$          s%forces(iatom)%f3xcc = 0.0d0
+!!$          s%forces(iatom)%ftot  = 0.0d0
+!!$        end do
+!!$
+!!$! Format Statements
+!!$! ===========================================================================
+!!$! None
+!!$
+!!$! End Subroutine
+!!$! ===========================================================================
+!!$        return
+!!$        end subroutine initialize_forces
 
 
-  do iband=1, nac_vars%ntransitions
-    do jband=1, nac_vars%ntransitions
+! ===========================================================================
+! build_forces
+! ===========================================================================
+! Subroutine Description
+! ===========================================================================
+!> This subroutine builds the total forces by adding contributions from the
+!! kinetic, Vna, etc. and stores to a T_force variable called forces (:).
+!
+! ===========================================================================
+! Code written by:
+!> @author 
+! Box 6315, 209 Hodges Hall
+! Department of Physics
+! West Virginia University
+! Morgantown, WV 26506-6315
+!
+! (304) 293-3422 x1409 (office)
+! (304) 293-5732 (FAX)
+! ===========================================================================
+!
+! Program Declaration
+! ===========================================================================
+        implicit none
+
+        include '../include/constants.h'
+
+! Argument Declaration and Description
+! ===========================================================================
+        type(T_structure), target :: s            !< the structure to be used
+
+! Local Parameters and Data Declaration
+! ===========================================================================
+! None
+
+! Local Variable Declaration and Description
+! ===========================================================================
+        integer iatom, ineigh, matom, ialpha  !< counter over atoms/neighbors
+        integer in1, in2, in3        !< species number
+        integer jatom, num_neigh     !< counters over neighbors
+        integer mbeta                !< the cell containing neighbor of iatom
+        integer norb_mu, norb_nu     !< size of the (mu, nu) block for pair
+        integer ix                   !< counter over dimensions
+        integer imu, inu             !< counter over MEs
+        integer mneigh
+        integer ibeta, jbeta
+
+        real sumT
+
+        real, dimension (3) :: r1, r2, r3 !< position of atoms
+
+        type(T_forces), pointer :: pdalpha
+        type(T_forces), pointer :: pdi
+        type(T_forces), pointer :: pdj
+
+        ! band-structure interactions
+        type(T_assemble_block), pointer :: pK_neighbors
+        type(T_assemble_neighbors), pointer :: pkinetic
+        type(T_assemble_block), pointer :: pvna_neighbors
+        type(T_assemble_neighbors), pointer :: pvna
+        type(T_assemble_block), pointer :: pvxc_neighbors
+        type(T_assemble_neighbors), pointer :: pvxc
+        type(T_assemble_block), pointer :: pSR_neighbors
+        type(T_assemble_neighbors), pointer :: pewaldsr
+        type(T_assemble_block), pointer :: pLR_neighbors
+        type(T_assemble_neighbors), pointer :: pewaldlr
+
+        ! for overlap repulsive force
+        type(T_assemble_block), pointer :: pCape_neighbors
+        type(T_assemble_neighbors), pointer :: pcapemat
+        type(T_assemble_block), pointer :: poverlap_neighbors
+        type(T_assemble_neighbors), pointer :: poverlap
+
+        ! Density matrix stuff
+        type(T_assemble_neighbors), pointer :: pdenmat
+        type(T_assemble_block), pointer :: pRho_neighbors
+        type(T_assemble_block), pointer :: pRho_neighbors_matom
+
+! Allocate Arrays
+! ===========================================================================
+! None
+
+! Procedure
+! ===========================================================================
+!       T W O - C E N T E R   B A N D - S T R U C T U R E   F O R C E S
+! ***************************************************************************
+! loop over atoms in central cell
+        do iband, nac_vars%ntransitions
+           do jband, nac_vars%ntransitions
+              do iatom = 1, s%natoms
+                 matom = s%neigh_self(iatom)
+                 in1 = s%atom(iatom)%imass
+                 norb_mu = species(in1)%norb_max
+                 num_neigh = s%neighbors(iatom)%neighn
+                 
+                 ! cut some lengthy notation
+                 pdi=>nac_vars%dij(iband,jband,iatom)
+                 
+                 ! density matrix
+                 pdenmat=>nac_vars%band(iband,jband)%tdenmat(iatom)
+                 pTRho_neighbors_matom=>pdenmat%neighbors(matom)
+                 
+                 ! interactions for each contribution
+                 pkinetic=>s%kinetic(iatom)
+                 pvna=>s%vna(iatom)
+                 pvxc=>s%vxc(iatom)
+                 pewaldsr=>s%ewaldsr(iatom)
+                 pewaldlr=>s%ewaldlr(iatom)
+                 
+! allocate force terms and initialize to zero
+                 allocate (pdi%vna_atom (3, num_neigh)); pdi%vna_atom = 0.0d0
+                 !         allocate (pfi%vna_ontop (3, num_neigh)); pfi%vna_ontop = 0.0d0
+                 allocate (pdi%vxc_off_site (3, num_neigh)); pdi%vxc_off_site = 0.0d0
+                 allocate (pdi%vxc_on_site (3, num_neigh)); pdi%vxc_on_site = 0.0d0
+                 allocate (pdi%ewaldsr (3, num_neigh)); pdi%ewaldsr = 0.0d0
+                 allocate (pdi%ewaldlr (3, num_neigh)); pdi%ewaldlr = 0.0d0
+
+! Now loop over all neighbors ineigh of iatom.
+                 do ineigh = 1, num_neigh
+                    mbeta = s%neighbors(iatom)%neigh_b(ineigh)
+                    jatom = s%neighbors(iatom)%neigh_j(ineigh)
+                    in2 = s%atom(jatom)%imass
+                    norb_nu = species(in2)%norb_max
+
+                    ! cut some lengthy notation
+                    pdj=>nac_vars%dij(iband,jband,jatom)
+
+                    ! density matrix - neighbors
+                    pTRho_neighbors=>pdenmat%neighbors(ineigh)
+                    
+                    ! interactions - neighbors
+                    pK_neighbors=>pkinetic%neighbors(ineigh)
+                    pvna_neighbors=>pvna%neighbors(ineigh)
+                    
+! KINETIC FORCES (TWO-CENTER)
+! ***************************************************************************
+! The derivatives are tpx and, where p means derivative and x means crytal
+! coordinates. The derivative is a vector in crystal
+! coordinates and is stored in pK_neighbors%Dblock. The subroutine
+! returns the derivative for just that one value of iatom and ineigh, and the
+! result is returned in the arguement list, tpx(3,4,4).
+                    do ix = 1, 3
+                       sumT = 0.0d0
+                       do inu = 1, norb_nu
+                          do imu = 1, norb_mu
+                             sumT = sumT                                                &
+                                   pTRho_neighbors%block(imu,inu)*pK_neighbors%Dblock(ix,imu,inu)
+                          end do
+                       end do
+                       
+! Now add sum to appropriate force term. see notes "the total band structure
+! The (-1.d0) makes it "force-like".
+                       ! direct term
+                       pdi%kinetic(ix) = pdi%kinetic(ix) + (-1.0d0)*sumT
+                       ! cross term
+                       pdj%kinetic(ix) = pdj%kinetic(ix) - (-1.0d0)*sumT
+                    end do ! do ix
 
 
-    do iatom=1,s%natoms
-      do ineigh=1,s%neighbors(iatom)%neighn
-        in1 = s%atom(iatom)%imass
-        do imu=1,species(in1)%norb_max
+! ASSEMBLE HARTREE (TWO-CENTER) FORCES - ATOM CASE
+! ***************************************************************************
+! The vna 2 centers are: ontop (L), ontop (R), and atm.
+! First, do vna_atom case. Here we compute <i | v(j) | i> matrix elements.
+!
+! If r1 = r2, then this is a case where the two wavefunctions are at the
+! same site, but the potential vna is at a different site (atm case).
+! The derivative wrt the "atom r1" position (not the NA position) are
+! stored in bcnapx.
+
+! Note that the loop below involves num_orb(in1) ONLY. Why?
+! Because the potential is somewhere else (or even at iatom), but we are
+! computing the vna_atom term, i.e. < phi(i) | v | phi(i) > but V=v(j) )
+! interactions.
+
+! Form the "force-like" derivative of the atom terms for NA,
+! or -(d/dr1) <phi(mu,r-r1)!h(r-ratm)!phi(nu,r-r1)>.
+
+! Now loop over all neighbors ineigh of iatom.
+! Notice the explicit negative sign, this makes it force like.
+                    do inu = 1, norb_mu
+                       do imu = 1, norb_mu
+                          pdi%vna_atom(:,ineigh) = pdi%vna_atom(:,ineigh)             &
+                               &           - pTRho_neighbors_matom%block(imu,inu)*pvna_neighbors%Dblock(:,imu,inu)
+                       end do
+                    end do
+                 end do ! end loop over neighbors
+
+
+! ASSEMBLE HARTREE (TWO-CENTER) FORCES - ONTOP CASE
+! ***************************************************************************
+! Now loop over all neighbors ineigh of iatom.
+                 do ineigh = 1, num_neigh
+                    mbeta = s%neighbors(iatom)%neigh_b(ineigh)
+                    jatom = s%neighbors(iatom)%neigh_j(ineigh)
+                    in2 = s%atom(jatom)%imass
+                    norb_nu = species(in2)%norb_max
+                    
+                    ! cut some lengthy notation
+                    pdj=>s%nac_vars%dij(iband,jband,jatom)
+
+                    ! density matrix - neighbors
+                    pTRho_neighbors=>ptdenmat%neighbors(ineigh)
+
+                    ! cut some lengthy notation for vna
+                    pvna_neighbors=>pvna%neighbors(ineigh)
+
+! If r1 .ne. r2, then this is a case where the potential is located at one of
+! the sites of a wavefunction (ontop case).
+                    if (iatom .eq. jatom .and. mbeta .eq. 0) then
+! Do nothing here - special case. Interaction already calculated in atm case.
+
+                    else
+
+! Notice the explicit negative sign, this makes it force like.
+                       do inu = 1, norb_nu
+                          do imu = 1, norb_mu
+                             pdi%vna_ontop(:,ineigh) = pdi%vna_ontop(:,ineigh)          &
+                                  &            - pTRho_neighbors%block(imu,inu)*pvna_neighbors%Dblocko(:,imu,inu)
+                          end do
+                       end do
+                    end if
+                 end do ! end loop over neighbors
+
+
+! ASSEMBLE EXCHANGE-CORRELATION (TWO-CENTER) FORCE - ON-SITE CASE
+! ***************************************************************************
+! The vxc two-center forces are: vxc_on_site and vxc_off_site.
+
+! First we calculate the on-site force contributions.
+! Note that the loop below involves num_orb(in1) ONLY. Why?
+! Because the potential is somewhere else (or even at iatom), but we are
+! computing the vxc_on_site term, i.e. < phi(i) | v | phi(i) > but V=v(j) )
+! interactions.
+
+! Now loop over all neighbors ineigh of iatom.
+                 pvxc_neighbors=>pvxc%neighbors(matom)
+                 do ineigh = 1, num_neigh            
+                    do inu = 1, norb_mu
+                       do imu = 1, norb_mu
+                          pdi%vxc_on_site(:,ineigh) = pdi%vxc_on_site(:,ineigh)        &     
+                               &           - pTRho_neighbors_matom%block(imu,inu)*pvxc_neighbors%Dblocko(:,imu,inu)
+                       end do
+                    end do
+                 end do ! end loop over neighbors
+
+
+! ASSEMBLE EXCHANGE-CORRELATION (TWO-CENTER) FORCE - OFF-SITE CASE
+! ***************************************************************************
+! Next, we calculate the off site force interaction terms.
+! If r1 = r2, then this is a case of the self-interaction term or the
+! one center term which has no force.
+!
+! Form the "force-like" derivative of the atom terms for vxc,
+! or -(d/dr1) <phi(mu,r-r1)!h(r-ratm)!phi(nu,r-r1)>.
+
+! Now loop over all neighbors ineigh of iatom.
+                 do ineigh = 1, num_neigh
+                    mbeta = s%neighbors(iatom)%neigh_b(ineigh)
+                    jatom = s%neighbors(iatom)%neigh_j(ineigh)
+                    in2 = s%atom(jatom)%imass
+                    norb_nu = species(in2)%norb_max
+                    
+                    ! cut some lengthy notation
+                    pdj=>nac_vars%dij(iband,jband,jatom)
+
+                    ! density matrix - neighbors
+                    pTRho_neighbors=>ptdenmat%neighbors(ineigh)
+
+                    ! vxc interactions - neighbors
+                    pvxc_neighbors=>pvxc%neighbors(ineigh)
+
+! Notice the explicit negative sign, this makes it force like.
+                    if (iatom .eq. jatom .and. mbeta .eq. 0) then
+
+! Do nothing here - special case. Interaction already calculated in atm case.
+
+                    else
+                       do inu = 1, norb_nu
+                          do imu = 1, norb_mu
+                             pdi%vxc_off_site(:,ineigh) = pdi%vxc_off_site(:,ineigh)    &
+                                  &             - pTRho_neighbors%block(imu,inu)*pvxc_neighbors%Dblock(:,imu,inu)
+                          end do
+                       end do
+                    end if
+                 end do ! end loop over neighbors
+                 
+
+!  ASSEMBLE EWALD (TWO-CENTER) FORCES
+! ***************************************************************************
+! The Ewald two-center forces are: ewaldsr and ewaldlr.
+!
+! If r1 = r2, then this is a case of the self-interaction term or the
+! one center term which has no force.
+!
+! Form the "force-like" derivative of the atom terms for vxc,
+! or -(d/dr1) <phi(mu,r-r1)!h(r-ratm)!phi(nu,r-r1)>.
+
+! Now loop over all neighbors ineigh of iatom.
+                 do ineigh = 1, num_neigh
+                    mbeta = s%neighbors(iatom)%neigh_b(ineigh)
+                    jatom = s%neighbors(iatom)%neigh_j(ineigh)
+                    in2 = s%atom(jatom)%imass
+                    norb_nu = species(in2)%norb_max
+
+                    ! cut some lengthy notation
+                    pdj=>nac_vars%dij(iband,jband,jatom)
+
+                    ! density matrix - neighbors
+                    pTRho_neighbors=>ptdenmat%neighbors(ineigh)
+                    
+                    ! interactions - neighbors
+                    pSR_neighbors=>pewaldsr%neighbors(ineigh)
+                    pLR_neighbors=>pewaldlr%neighbors(ineigh)
+
+! Notice the explicit negative sign, this makes it force like.
+                    if (iatom .eq. jatom .and. mbeta .eq. 0) then
+
+! Do nothing here - special self-interaction case.
+
+                    else
+
+! short-range part ewaldsr
+                       do inu = 1, norb_nu
+                          do imu = 1, norb_mu
+                             pdi%ewaldsr(:,ineigh) = pdi%ewaldsr(:,ineigh)              &
+                                  &             - 0.5d0*pTRho_neighbors%block(imu,inu)*pSR_neighbors%Dblock(:,imu,inu)
+! Note - remove the 0.5d0 and make sure it gets into the Dassembler - I add it here
+! because the 0.5d0 was here in the original assemble_F.f90 routine.
+                          end do
+                       end do
+
+! long-range part ewaldsr
+                       do inu = 1, norb_nu
+                          do imu = 1, norb_mu
+                             pdi%ewaldlr(:,ineigh) = pdi%ewaldlr(:,ineigh)              &
+                                  &             - pTRho_neighbors%block(imu,inu)*pLR_neighbors%Dblock(:,imu,inu)
+                          end do
+                       end do
+                    end if
+                 end do ! end loop over neighbors
+              end do ! end loop over atoms
+
+
+! ADD CONTRIBUTIONS TO GET TOTAL BAND-STRUCTURE FORCE (TWO-CENTER)
+! ***************************************************************************
+! loop over atoms in central cell
+              do iatom = 1, s%natoms
+                 ! cut some lengthy notation
+                 pdi=>nac_vars%dij(iband,jband,iatom)
+
+! kinetic contribution to total force
+! ****************************************************************************
+                 pdi%ftot = pdi%ftot + pdi%kinetic
+
+! Loop over all neighbors of iatom and add in the neighbor-contributed forces
+! ****************************************************************************
+                 num_neigh = s%neighbors(iatom)%neighn
+                 do ineigh = 1, num_neigh
+
+! cut some lengthy notation
+                    jatom = s%neighbors(iatom)%neigh_j(ineigh)
+                    pdj=>nac_vars%dij(iband,jband,jatom)
+
+! vna contribution to total force
+! ****************************************************************************
+! Hartree forces - atom case
+                    pdi%vna = pdi%vna + pdi%vna_atom(:,ineigh)
+                    pdj%vna = pdj%vna - pdi%vna_atom(:,ineigh)
+
+                    pdi%ftot = pdi%ftot + pdi%vna_atom(:,ineigh)
+                    pdj%ftot = pdj%ftot - pdi%vna_atom(:,ineigh)
+
+! Hartree forces - ontop terms
+                    pdi%vna = pdi%vna + pdi%vna_ontop(:,ineigh)
+                    pdj%vna = pdj%vna - pdi%vna_ontop(:,ineigh)
+
+                    pdi%ftot = pdi%ftot + pdi%vna_ontop(:,ineigh)
+                    pdj%ftot = pdj%ftot - pdi%vna_ontop(:,ineigh)
+!
+! vxc contribution to total force
+! ****************************************************************************
+! off site interactions
+                    pdi%vxc = pdi%vxc + pdi%vxc_off_site(:,ineigh)
+                    pdj%vxc = pdj%vxc - pdi%vxc_off_site(:,ineigh)
+
+                    pdi%ftot = pdi%ftot + pdi%vxc_off_site(:,ineigh)
+                    pdj%ftot = pdj%ftot - pdi%vxc_off_site(:,ineigh)
+
+! on site interactions
+                    pdi%vxc = pdi%vxc + pdi%vxc_on_site(:,ineigh)
+                    pdj%vxc = pdj%vxc - pdi%vxc_on_site(:,ineigh)
+
+                    pdi%ftot = pdi%ftot + pdi%vxc_on_site(:,ineigh)
+                    pdj%ftot = pdj%ftot - pdi%vxc_on_site(:,ineigh)
+
+! Ewald contribution to total force
+! ****************************************************************************
+! ewaldsr interactions
+                    pdi%ewald = pdi%ewald - pdi%ewaldsr(:,ineigh)
+                    pdj%ewald = pdj%ewald + pdi%ewaldsr(:,ineigh)
+
+                    pdi%ftot = pdi%ftot - pdi%ewaldsr(:,ineigh)
+                    pdj%ftot = pdj%ftot + pdi%ewaldsr(:,ineigh)
+
+! ewaldlr interactions
+                    pdi%ewald = pdi%ewald - pdi%ewaldlr(:,ineigh)
+                    pdj%ewald = pdj%ewald + pdi%ewaldlr(:,ineigh)
+
+                    pdi%ftot = pdi%ftot - pdi%ewaldlr(:,ineigh)
+                    pdj%ftot = pdj%ftot + pdi%ewaldlr(:,ineigh)
+                 end do ! end loop over neighbors
+              end do ! end loop over atoms
+
+! Vnl contribution to total force
+! ****************************************************************************
+! Loop over all atoms iatom in the central cell.
+              do iatom = 1, s%natoms
+
+! cut some lengthy notation
+                 pdi=>nac_vars%dij(iband,jband,iatom)
+
+! Loop over all neighbors of iatom and add in the neighbor-contributed forces
+! Note - the neighbor mapping for vnl is different than neighbor mapping for
+! other terms, so, we need to add in the contributions correctly.
+                 do ineigh = 1, s%neighbors_PP(iatom)%neighn
+                    jatom = s%neighbors_PP(iatom)%neigh_j(ineigh)
+
+! cut some lengthy notation
+                    pdj => nac_vars%dij(iband,jband,jatom)
+
+! atom contribution
+                    pdi%vnl = pdi%vnl + pdi%vnl_atom(:,ineigh)
+                    pdj%vnl = pdj%vnl - pdi%vnl_atom(:,ineigh)
+
+                    pdi%ftot = pdi%ftot + pdi%vnl_atom(:,ineigh)
+                    pdj%ftot = pdj%ftot - pdi%vnl_atom(:,ineigh)
+                 end do
+
+! ontop left contribution
+                 do ineigh = 1, s%neighbors_PPx(iatom)%neighn
+                    jatom = s%neighbors_PPx(iatom)%neigh_j(ineigh)
+
+! cut some lengthy notation
+                    pdj=>nac_vars%dij(iband,jband,jatom)
+
+                    pdi%vnl = pdi%vnl + 2.0d0*pdi%vnl_ontop(:,ineigh)
+                    pdj%vnl = pdj%vnl - 2.0d0*pdi%vnl_ontop(:,ineigh)
+
+                    pdi%ftot = pdi%ftot + 2.0d0*pdi%vnl_ontop(:,ineigh)
+                    pdj%ftot = pdj%ftot - 2.0d0*pdi%vnl_ontop(:,ineigh)
+                 end do ! end loop over neighbors
+              end do  ! end loop over atoms
+! ***************************************************************************
+!                                   E N D
+!       T W O - C E N T E R   B A N D - S T R U C T U R E   F O R C E S
+! ***************************************************************************
+
+! ADD CONTRIBUTIONS TO GET TOTAL BAND-STRUCTURE FORCE (THREE-CENTER)
+! ***************************************************************************
+! Loop over all atoms iatom in the central cell.
+! Single-source loops (not dependent on neighbours)
+              do iatom = 1, s%natoms
+                 ! cut some lengthy notation
+                 pdi=>nac_vars%dij(iband,jband,iatom)
+
+! vna three-center contribution to the total force
+! ****************************************************************************
+                 pdi%ftot = pdi%ftot - pdi%f3naa - pdi%f3nab - pdi%f3nac
+
+! vxc three-center contribution to the total force
+! ****************************************************************************
+                 pdi%ftot = pdi%ftot - pdi%f3xca - pdi%f3xcb - pdi%f3xcc
+              end do ! end loop over atoms
+! ***************************************************************************
+!                                   E N D
+!     T H R E E - C E N T E R   B A N D - S T R U C T U R E   F O R C E S
+! ***************************************************************************
+
+! ***************************************************************************
+!
+! Need to add the Ei<d/dr (phi)_mu|(phi)_nu>+Ej< (phi)_mu|d/dr(phi)_nu>
+!            P U L A Y   C O R R E C T I O N S   (T W O - C E N T E R)
+! ***************************************************************************
+! loop over atoms in central cell
+        do iatom = 1, s%natoms
+          in1 = s%atom(iatom)%imass
+          norb_mu = species(in1)%norb_max
+          num_neigh = s%neighbors(iatom)%neighn
+
+          ! cut some lengthy notation
+          pfi=>s%forces(iatom)
+
+          ! density matrix with eigenvalues
+          pcapemat=>s%capemat(iatom)
+
+          ! interactions for each contribution
+          poverlap=>s%overlap(iatom)
+
+! Now loop over all neighbors ineigh of iatom.
+          do ineigh = 1, num_neigh
+            mbeta = s%neighbors(iatom)%neigh_b(ineigh)
             jatom = s%neighbors(iatom)%neigh_j(ineigh)
-            in2 = s%neighbors(jatom)%imass
-            do inu=1,species(in2)%norb_max
-              cmunu=s%kpoints(1)%c(mmu,iband)
+            in2 = s%atom(jatom)%imass
+            norb_nu = species(in2)%norb_max
 
+            ! cut some lengthy notation
+            pfj=>s%forces(jatom)
 
+            ! density matrix - neighbors
+            pCape_neighbors=>pcapemat%neighbors(ineigh)
 
-  end subroutine NAC_dij
+            ! interactions - neighbors
+            poverlap_neighbors=>poverlap%neighbors(ineigh)
 
+! The derivatives are tpx and, where p means derivative and x means crytal
+! coordinates. The derivative is a vector in crystal
+! coordinates and is stored in pK_neighbors%Dblock. The subroutine
+! returns the derivative for just that one value of iatom and ineigh, and the
+! result is returned in the arguement list, tpx(3,4,4).
+            do ix = 1, 3
+              sumT = 0.0d0
+              do inu = 1, norb_nu
+                do imu = 1, norb_mu
+                  sumT = sumT                                                &
+                   + pCape_neighbors%block(imu,inu)*poverlap_neighbors%Dblock(ix,imu,inu)
+                end do
+              end do
 
-  subroutine NACs(nac_vars, den_vars, s)
-    type(T_NAC_vars), intent(inout) :: nac_vars
-    type(T_density_MDET), intent(in) :: den_vars
-    type(T_structure), intent(in) :: s
+! Now add sum to appropriate force term. see notes "the total band structure
+! The (-1.d0) makes it "force-like".
+              ! direct term
+              pfi%pulay(ix) = pfi%pulay(ix) + (-1.0d0)*sumT
+              ! cross term
+              pfj%pulay(ix) = pfj%pulay(ix) - (-1.0d0)*sumT
+            end do ! do ix
+          end do ! end loop over neighbors
+        end do ! end loop over atoms
 
+! ADD CONTRIBUTIONS TO GET TOTAL FORCE AFTER PULAY CORRECTION
+! ***************************************************************************
+! loop over atoms in central cell
+        do iatom = 1, s%natoms
+          ! cut some lengthy notation
+          pfi=>s%forces(iatom)
 
-    integer iband
-    integer jband
-    integer ikpoint
-    integer iatom, jatom, katom
-    integer ineigh
-    integer natoms
-    integer mbeta
-    integer imu, inu
-    integer in1, in2
-    integer mmu, nnu
+! overlap repulsive contribution to total force
+! ****************************************************************************
+          pfi%ftot = pfi%ftot - pfi%pulay
+        end do
+! ***************************************************************************
+!                                  E N D
+!            P U L A Y   C O R R E C T I O N S   (T W O - C E N T E R)
+! ***************************************************************************
 
+! ***************************************************************************
+!
+!            U S R   C O R R E C T I O N S   (T W O - C E N T E R)
+! ***************************************************************************
+! Loop over all atoms iatom in the central cell.
+        do iatom = 1, s%natoms
+          ! cut some lengthy notation
+          pfi=>s%forces(iatom)
+          pfi%ftot = pfi%ftot + pfi%usr
+        end do ! end loop over atoms
 
+! Format Statements
+! ===========================================================================
+! None
 
-    character (len = 20) :: stage
+! End Subroutine
+! ===========================================================================
+   return
+ end subroutine NAC_build_dij
+ 
+ subroutine overlap_sign (nac_vars, s, itime_step,species)
+   integer,intent(in) :: itime_step 
+   integer iband, iorbital 
+   type(T_NAC_vars), intent(inout) :: nac_vars
+   type(T_structure), intent(in) :: s
+   type(T_species), intent(in) :: species(:)
+   
+   call ovelap_numeric(nac_vars,s,itime_step,species) ! I think this should not be in this subroutine it should be called from the main loop
+   do iband = 1, nac_vars%ntransitions
+      if (nac_vars(iband,iband) .lt. -0.1) then
+         ! I have commented the write part this should be moved to the io subroutine
+         !            write (*,*) 'The arbitrary sign of wavefunctions of this and previous time step are different'
+         !            write (*,*) 'We will change the sign in order to have the same sign in all time steps!!'
+         do iorbital = 1 , s%norbitals
+            s%kpoints(1)%c(iorbital,nac_vars%map_ks(iband)) = - s%kpoints(1)%c(iorbital,nac_vars%map_ks(iband))
+         end do
+      end if
+   end do
+ end subroutine overlap_sign
 
+ subroutine overlap_numeric(nac_vars, s , itime_step, species)
+    implicit none 
+    include '../include/interactions_2c.h'
+    integer it
+    integer imu, inu, jmu,jnu, iorbital !< counter over orbitals
+    integer in1, in2, in3               !< species numbers
+    integer iatom, jatom, ineigh        !< counter over atoms and neighbors
+    integer isorp, interaction          !< which interaction and subtype
+    integer ix
+    integer ia
+    integer ik,ij
+    integer num_neigh                   !< number of neighbors
+    integer mbeta                       !< the cell containing iatom's neighbor
+    
+    integer norb_mu, norb_nu         !< size of the block for the pair
+
+    real z                           !< distance between r1 and r2
     real diff
-    real :: vec(3)
-    real dot
-    real cmunu
+    real delta
 
-    complex pahse
-    complex step1, step2
+    real, dimension (3) :: eta        !< vector part of epsilon eps(:,3)
+    real, dimension (3, 3) :: eps     !< the epsilon matrix
+    real, dimension (3, 3, 3) :: deps !< derivative of epsilon matrix
+    real, dimension (3) :: r1, r2, r3, v     !< positions of iatom and jatom
+    real, dimension (3) :: sighat     !< unit vector along r2 - r1
+    real, dimension (nac_vars%ntransitions, nac_vars%ntransitions) :: suma, sumb
+    real y, rcutoff_i, rcutoff_j, range
+    real, dimension(s%norbitals,s%norbitals) :: sover
+    real, dimension(numorb_max,numorb_max) :: sm ! need to find the numorb_max
+    real, dimension(3,numorb_max,numorb_max) :: sx ! need to find the numorb_max in the new fireball or change the whole method
 
-    gks = 0.0d0
-    do iband =1, nac_vars%ntransitions
-      do jband = 1, nac_vars%ntransitions
-        do ikpoints =1 , den_vars%nkpoints !Loop over special kpoints
-          if (iband .ne. jband) then
-! Check for degeneracy
-            diff = abs(den_vars%eigen_k(nac_vars%map_ks(iband),ikpoint) - den_vars%eigen_k(nac_vars%map_ks(jband),ikpoint) )
-            if (diff .lt. nac_vars%tolnac) then
-              stage == 'degenerate bands'
-              call NAC_io(stage)
-            else
-! ===========================================================================
-!                 LOPP-2c
-! Loop over all atoms iatom in the unit cell, and then over all its neighbors.
-! ===========================================================================
-            do iatom = 1 , s%natoms
-              in1 = s%atom(iatom)%imass
-              do ineigh = 1 , s%neighbors(iatom)%neighn
-                mbeta = s%neighbors(iatom)%neigh_b(ineigh)
-                jatom = s%neighbors(iatom)%neigh_j(ineigh)
-                in2 = s%neighbors(jatom)%imass
-                vec =  s%atom(jatom)%ratom - s%atom(jatom)%ratom + s%xl(mbeta)%a
-! TWO THINGS : 1.CREATE A FUNCTION FOR DOT PRODUCT
-!              2. SPECIAL_K ARE NOT IN THE NEW FIREBALL (ACCORDING TO ARTURO)
-!                 FIND A WAY CALCULATE THEM, THEY ARE IN GETKPOINTS.F90 IN THE OLD CODE
-                dot = DOT(special_k(ikpoint),vec)
-! NOTE from old code :! JOM : I guess we do not need now any phase (icluster.eq.1) but we may
-! need it later; keep it just in case, buy without foccupy
-!              phase = phasex*foccupy(map_ks(iband),ikpoint)
-                phase = cmplx(cos(dot),sin(dot))* s%kpoints(ikpoint)%weight
-                norb_mu = species(in1)%norb_max
-                norb_nu = species(in2)%norb_max
-                do imu = 1,norb_mu
-! CAN NOT FIND deglect(iatom) in the new code It's easy to calculate it, it's in initbasics.f90 in the old code
-                  mmu = imu + degelec(iatom)
-                  step1 = phase*den_vars%bbnkre(mmu, nac_vars%map_ks(iband),ikpoint)
-                  do inu = 1, norb_nu
-                    nnu = inu + degelec(jatom)
-                    step2 = step1*den_vars%bbnkre(nnu, nac_vars%map_ks(iband),ikpoint)
-                    cmunu = real(step2)
-                    nac_vars%gks(:,iatom,iband,jband) = nac_vars%gks(:,iatom,iband,jband) +    &
-                    &   cmunu*( nac_vars%gover(:,imu,inu,ineigh,iatom)*den_var%eigen_k(nac_var%map_ks(jband),ikpoint)    &
-                    &           - nac_vars%gh_2c(:,imu,inu,ineigh,iatom) )
-
-                    nac_vars%gks(:,jatom,iband,jband) = nac_vars%gks(:,jatom,iband,jband) +    &
-                    &   cmunu*( - nac_vars%gover(:,imu,inu,ineigh,iatom)*den_vars%eigen_k(nac_vars%map_ks(iband),ikpoint)  &
-                    &           + nac_vars%gh_2c(:,imu,inu,ineigh,iatom) )
-! ===========================================================================
-!                LOOP to add 3-c contributions
-! ===========================================================================
-                    do katom = 1 , s%natoms
-                      nac_vars%gks(:,katom,iband,jband) = nac_vars%gks(:,katom,iband,jband) -   &
-                      &   cmunu*nac_vars%gh_3c(:,katom,imu,inu,ineigh,iatom)
-                    end do ! end loop on katom
-                  end do ! end loop on inu
-                end do ! end loop on imu
-! ===========================================================================
-!               Special case : atom-case
-! ===========================================================================
-                do imu =1, norb_mu
-                                   mmu = imu + degelec(iatom)
-!              step1 = bbnkre(mmu,map_ks(iband),ikpoint)*spin
-                 step1 = bbnkre(mmu,map_ks(iband),ikpoint)
-                 do inu = 1, norb_nu
-                  nnu = inu + degelec(iatom)
-                  step2 = step1*den_vars%bbnkre(nnu,nac_vars%map_ks(jband),ikpoint)
-! JOM : careful with this once we include periodicity
-                  cmunu = real(step2)
-! Finally the expressions.........
-                  nac_vars%gks(:,iatom,iband,jband) = nac_vars%gks(:,iatom,iband,jband) +    &
-                  &   cmunu*( - nac_vars%gh_atm(:,imu,inu,ineigh,iatom) )
-!
-                  nac_vars%gks(:,jatom,iband,jband) = nac_vars%gks(:,jatom,iband,jband) +    &
-                  &   cmunu*(  nac_vars%gh_atm(:,imu,inu,ineigh,iatom) )
-                end do ! end loop imu
-              end do ! end loop on ineigh
-            end do ! end loop on iatom
-! ===========================================================================
-!                 PP-neighbors-2C    
-! ===========================================================================
-! Loop over all atoms
-            do iatom 1 , s%natoms
-              in1 = s%atom(iatom)%imass
-! ===========================================================================
-! ONtop-Left case
-! ===========================================================================
-! Loop over neighbors of each iatom for ontop-Left case
-              do ineigh = 1 , s%neighborsPP(iatom)%neighn
-                mbeta = s%neighborsPP(iatom)%neigh_b(ineigh)
-                jatom = s%neighborsPP(iatom)%neigh_j(ineigh)
-                in2 = s%neighorsPP(jatom)%imass
-                vec = s%atom(jatom)%ratom - s%atom(jatom)%ratom + s%xl(mbeta)%a
-                dot = DOT(special_k(ikpoint),vec))
-                phase = cmplx(cos(dot),sin(dot))*s%kpoints(ikpoint)%wight
-                norb_mu = species(in1)%norb_max
-                norb_nu = species(in2)%norb_max
-                do imu = 1, norb_mu
-                  mmu = imu + degelec(iatom)
-                  step1 = phase*den_vars%bbnkre(mmu,nac_vars%map_ks(iband),ikpoint)
-                  do inu = 1, norb_nu
-                    nnu = inu + degelec(jatom)
-                    step2 = step1*den_vars%bbnkre(nnu,nac_vars%map_ks(iband),ikpoint)
-                    cmunu = real(step2)
-                    nac_vars%gks(:,iatom,iband,jband) = nac_vars%gks(:,iatom,iband,jband)+ &
-                    & cmunu*(- nac_vars%gh_pp_otl(:,imu,inu,ineigh,iatom))
-                    nac_vars%gks(:,iatom,iband,jband) = nac_vars%gks(:,iatom,iband,jband)+ &
-                    & cmunu*(  nac_vars%gh_pp_otl(:,imu,inu,ineigh,iatom))
-                  end do ! end loop on inu
-                end do ! end loop on imu
-              end do ! end loop over ineigh  
-! ===========================================================================
-! ONtop-Right case
-! ===========================================================================
-! Loop over neighbors of each iatom for ontop-Right case
-              do ineigh = 1, s%neighborsPP(iatom)%neighn
-                mbeta = s%neighborsPP(iatom)%neigh_b(ineigh)
-                jatom = s%neighnorsPP(iatom)%neigh_j(ineigh)
-                in2 = s%neighorsPP(jatom)%imass
-                vec = s%atom(jatom)%ratom - s%atom(jatom)%ratom + s%xl(mbeta)%a
-                dot = DOT(special_k(ikpoint),vec)
-                phase = cmplx(cos(dot),sin(dot))*s%kpoints(ikpoint)%weight
-                norb_mu = species(in1)%norb_max
-                norb_nu = special(in2)%norb_max
-                do imu = 1 , norb_mu
-                  mmu = imu + degelec(iatom)
-                  step1 = phase*den_vars%bbnkre(mmu,nac_vars%map_ks(iband),ikpoint)
-                  do inu = 1, norb_nu
-                    nnu = inu + degelec(jatom)
-                    step2 = step1*den_vars%bbnkre(nnu, nac_vars%map_ks(jband),ikpoint)
-                    cmunu = real(step2)
-                    ! Finally the expressions.........
-                    nac_vars%gks(:,iatom,iband,jband) = nac_vars%gks(:,iatom,iband,jband) +    &
-                    &   cmunu*( - nac_vars%gh_pp_otr(:,imu,inu,ineigh,iatom) )
-!
-                    nac_vars%gks(:,jatom,iband,jband) = nac_vars%gks(:,jatom,iband,jband) +    &
-                    &   cmunu*(  nac_vars%gh_pp_otr(:,imu,inu,ineigh,iatom) )
-                  end do ! end loop over inu
-                end do ! end lopp over imu
-              end do ! end loop over ineigh      
-! ===========================================================================
-! ATOM case
-! ===========================================================================
-            do ineigh = 1,  s%neighborsPP(iatom)%neighn
-              mbeta = s%neighborsPP(iatom)%neigh_b(ineigh)
-              jatom = s%neighnorsPP(iatom)%neigh_j(ineigh)
-              in2 = s%neighorsPP(jatom)%imass
-              vec = s%atom(jatom)%ratom - s%atom(jatom)%ratom + s%xl(mbeta)%a
-              dot = DOT(special_k(ikpoint), vec)
-              phase = cmplx(cos(dot),sin(dot))*s%kpoints(ikpoint)%weight
-              norb_mu = species(in1)%norb_max
-              norb_nu = special(in2)%norb_max
-              do imu = 1, norb_mu
-                mmu = imu + degelec(iatom)
-                step1 = phase*den_vars%bbnkre(mmu,nac_vars%map_ks(iband),ikpoint)
-                do inu = 1, norb_nu
-                  nnu = inu + degelec(jatom)
-                  step2 = step1*den_vars%bbnkre(nnu, nac_vars%map_ks(jband),ikpoint)
-                  cmunu = real(step2)
-                  nac_vars%gks(:,iatom,iband,jband) = nac_vars%gks(:,iatom,iband,jband) +    &
-                  &   cmunu*( - nac_vars%gh_pp_atm(:,imu,inu,ineigh,iatom) )
-                  nac_vars%gks(:,jatom,iband,jband) = nac_vars%gks(:,jatom,iband,jband) +    &
-                  &   cmunu*(  nac_vars%gh_pp_atm(:,imu,inu,ineigh,iatom) )
-                end do ! end loop inu
-              end do ! end loop imu
-            end do ! end loop ineigh
-            end do ! end loop over iatom 
-
-! ===========================================================================
-! PP-neighbors-3C
-! ===========================================================================
-! Loop over all atoms iatom in the unit cell
-            do iatom = 1, s%natoms
-              in1 = s%atom(iatom)%imass
-              do ineigh = 1, s%neighborsPP(iatom)%neighn
-                mbeta = s%neighborsPP(iatom)%neigh_b(ineigh)
-                jatom = s%neighnorsPP(iatom)%neigh_j(ineigh)
-                in2 = s%neighorsPP(jatom)%imass
-                vec = s%atom(jatom)%ratom - s%atom(jatom)%ratom + s%xl(mbeta)%a
-                dot = DOT(special_k(ikpoint), vec)
-                phase = cmplx(cos(dot),sin(dot))*s%kpoints(ikpoint)%weight
-                norb_mu = species(in1)%norb_max
-                norb_nu = special(in2)%norb_max
-                do imu = 1, norb_mu
-                  mmu = imu + degelec(iatom)
-                  step1 = phase*den_vars%bbnkre(mmu,nac_vars%map_ks(iband),ikpoint)
-                  do inu = 1, norb_nu
-                    nnu = inu + degelec(jatom)
-                    step2 = step1*den_vars%bbnkre(nnu, nac_vars%map_ks(jband),ikpoint)
-                    cmunu = real(step2)
-                    do katom = 1, s%natom
-                      nac_vars%gks(:,katom,iband,jband) = nac_vars%gks(:,katom,iband,jband) +    &
-                      &   cmunu*( - nac_vars%gh_pp_3c(:,katom,imu,inu,ineigh,iatom) )
-                    end do ! end loop over katom
-                  end do ! end loop over inu
-                end do ! end loop over imu
-              end do ! end loop over ineigh
-            end do ! end loop over iatom
-            do katom = 1, s%natoms
-              nac_vars%gks(:,katom,iband,jband) = nac_vars%gks(:,katom,iband,jband) /        &
-     &    (den_vars%eigen_k(nac_vars%map_ks(iband),ikpoint) - den_vars%eigen_k(nac_vars%map_ks(jband),ikpoint) )
-            end do ! end loop on katom
-            end if ! end if for tolnac
-          end if ! end if iband .ne jband
-        end do ! end loop pn ikpoints
-      end do ! end loop on jband
-    end do ! end loop on iband
-  stage = 'print dij in files'
-  ! ask Guillermo what kind of file do we need to print these d_ij
-  end subroutine NACs
-
-  subroutine delta_t_ks(nac_vars, s , species)
-  ! you can get nssh fro species(ispecies)%nssh
+    interface
+       function distance (a, b)
+         real distance
+         real, intent(in), dimension (3) :: a, b
+       end function distance
+    end interface
     type(T_NAC_vars), intent(inout) :: nac_vars
-    type(T_density_MDET), intent(in) :: den_vars
     type(T_structure), intent(in) :: s
     type(T_species), intent(in) :: species(:)
+    
+
+    type(T_assemble_block), pointer :: pS_neighbors
+    type(T_assemble_neighbors), pointer :: poverlap
+
 
     do iatom = 1, s%natoms
-      r1 = nac_vars%ratom_old
-      rcutoff_i = 0.0d0
-      in1 = s%atom(iatom)%imass
-      do imu = 1, species(in1)%nssh
-        if (species(in1)%shell(imu)%rcutoff .gt. rcutoff_i) rcutoff_i = species(in1)%shell(imu)%rcutoff )
-      end do ! end loop on imu
-      do jatom = 1,natoms
-        r2 = s%atom(jatom)%ratom
-        in2 = s%atom(iatom)%imass
-        z = distance (r1, r2)
-        rcutoff_j = 0.0d0
-        do imu =1, species(in2)%nssh
-          if (species(in2)%shell(imu)%rcutoff .gt. rcutoff_j) rcutoff_j = species(in2)%shell(imu)%rcutoff )
-        end do ! end loop over imu
-        range = (rcutoff_i + rcutoff_j - 0.01d0)**2
-        range = sqrt(range) !? why do they square it and then take the squre root ?!
-        if (z .gt. range) then
-          s = 0.0d0
-        else 
-          if (z .lt. 1.0d-05) then
-            sighat(1) = 0.0d0
-            sighat(2) = 0.0d0
-            sighat(3) = 1.0d0
-          else
-            sighat = (r2 - r1)/z
-          end if ! if on z
-          call epsilon_function (r2,sighat,eps)
-          call Depsilon_2c (r1,r2,eps,deps)
-          isorb = 0
-          interaction = P_overlap
-          in3 = in2
-          norb_mu = species(in1)%norb_max
+       r1 = nac_vars%ratom_old(iatom)%a
+       rcutoff_i = 0.0d0
+       in1 = s%atom(iatom)%imass
+       norb_mu = species(in1)%norb_max
+       do imu =1 , species(in1)%nssh
+          if (species(in1)%shell(imu)%rcutoff .gt. rcutoff_i) rcutoff_i = species(in1)%shell(imu)%rcutoff
+       end do! imu
+       do jatom = 1, s%natoms
+          r2 = s%atom(jatom)%ratom
+          in2 = s%atom(iatom)%imass
           norb_nu = species(in2)%norb_max
-          !! in the old call they call doscentros here ask arturo about this,
-          !I'm folowing M_assemblr_2c_Harris, all we need is to get sx which
-          !means we want crystal coordinates so there has to be a rotation after
-          !getDME....
-          allocate (sm (norb_mu, norb_nu)); sm = 0.0d0
-          allocate (sx (norb_mu, norb_nu)); sx = 0.0d0
-          call getDMEs_Fdata_2c (in1, in2, interaction, isorp, z,          &
-   &                             norb_mu, norb_nu, sm, dsm)
-          call rotate (in1, in3, eps, norb_mu, norb_nu, sm, sx)
-          ! find out what's degelec(iatom) if it's not nessecary you can replace
-          ! the following loops just using s = sx
-          do inu = 1, norb_nu
-            jnu = inu + degelec(jatom)
-              do imu = 1, norb_mu
-                jmu = imu + degelec(iatom)
-                s(jmu,jnu) = sx(imu,inu)
-              end do ! end loop over imu
-            end do ! end loop on inu
-          end if ! end if on z.gt. range
-        end do ! end loop on  jatom
-    end do ! end loop over iatom
+          z = distance(r1,r2)
+          rcutoff_j = 0.0d0
+          do imu = 1 ,species(in2)%nssh  
+             if (species(in2)%shell(imu)%rcutoff .gt. rcutoff_i) rcutoff_j = species(in2)%shell(imu)%rcutoff
+          end do
+          range = abs(rcutoff_i + rcutoff_j - 0.01d0)
+          if (z .gt. range) then
+             sover = 0
+          else
+             if (z .lt. 1.0d-05) then
+                sighat(1) = 0.0d0
+                sighat(2) = 0.0d0
+                sighat(3) = 1.0d0
+             else 
+                sighat = (r2 - r1)/z
+             end if
+             call epsilon_function (r2, sighat, eps)
+             isorp = 0
+             interaction = P_overlap
+             in3 = in2
+             call getMEs_Fdata_2c (in1, in2, interaction, isorp, z,        &
+                  &                            norb_mu, norb_nu, sm)
+             call rotate (in1, in3, eps, norb_mu, norb_nu, sm, sx)
+             do imu = 1, norb_mu
+                jmu = imu +  s%iblock_slot(iatom)
+                do inu = 1, norb_nu 
+                   jnu = inu +  s%iblock_slot(jatom)
+                   sover(jmu, jnu) = sx(imu,inu)
+                end do ! end imu
+             end do ! end inu
+          end if
+       end do ! jatom
+    end do !iatom 
+       
 ! ===========================================================================
 ! Calculate overlap between Kohn-Sham states at different
 ! time steps
 ! Non-adiabatic term: dot pruduct sum
-
-    sumb = 0.0d0
-    do ikpoint = 1, den_vars%nkpoints
-      do ij = 1, nac_vars%ntransitions
-        do ik = 1, nac_vars%ntransitions
-          do imu = 1, s%norbitals
-            do inu = 1, s%norbitals
-              sumb(ik,ij) = sumb(ik,ij) +                               &
-     &        den_vars%bbnkre_old(imu,nac_vars%map_ks(ik),ikpoint)*den_vars%bbnkre(inu,nac_vars%map_ks(ij),ikpoint)*s(imu,inu)
-            end do ! end loop over inu
-          end do ! end loop over imu
-        end do ! end loop over ik
-      end do ! end loop over ij
-    end do ! end loop over ikpoints
-
+    nac_vars%sumb = 0.0d0
     do ij = 1, nac_vars%ntransitions
-      do ik = 1, nac_vars%ntransitions
-        nac_vars%dnac (ik,ij) = (sumb(ik,ij) - sumb(ij,ik))/(2.0d0*dt)
-!         write (552,*) ik, ij, dnac(ik,ij), sumb(ik,ij)/dt, sumb(ij,ik)/dt
-!         write(*,301) ij, ik, sumb(ij,ik)
-      end do ! end loop over ik
-    end do ! end loop over ij
-
-    if (.true.) then ! I don't know what should be true here?
- ! this part calculates the V.d_ij again why?
-
-
-! Calculate non-adiabatic dot-product sum using non-adiabatic couplings
-! gks
-! ===========================================================================
-!       ddt = dt / nddt
-!       deig = eigen_k - eigen_old
-    !    dvatom = vatom - vatom_old
-
-    !    dgks = gks - gks_old
-!write(*,*) "DEBUG1"
-! ===========================================================================
-!        delta = 1.0d0
-!        delta = 0.0d0
-         delta = 0.5d0
-!write(*,*) "DEBUG2"
-! Interpolation
-!        v = vatom_old + dvatom*delta
-! JOM-test
-         v = (ratom - ratom_old)/dt
-    !    g = gks_old + dgks*delta
-!write(*,*) "DEBUG3"
-! JOM-test
-!         g = gks_old
-!        v = vatom_old
-        g = gks
-!        v = vatom
-!        eig = eigen_old + deig*delta
-! Non-adiabatic term: dot pruduct sum
-         suma = 0.0d0
-         do ik = 1, nele
-          do ij = 1, nele
-           do iatom = 1, natoms
-            do ix = 1, 3
-          suma(ik,ij) = suma(ik,ij) + v(ix,iatom)*g(ix,iatom,ik,ij)
-            end do
-           end do
+       do ik = 1, nac_vars%ntransitions
+          do imu = 1, s%norbitals
+             do inu = 1, s%norbitals
+                nac_vars%sumb(ik,ij) = nac_vars%sumb(ik,ij) +                                 & 
+                     &      nac_vars%c_old(mmu,nac_vars%map_ks(ij))* s%kpoints(1)%c(inu,nac_vars%map_ks(ij))* sover(imu,inu)
+             end do
           end do
-         end do
-!write(*,*) "DEBUG4"
-! Compare both ways to calculate non-adaiabatic contribution
-!write(552,*) '---------------------------------'
-           do ik = 1, nele
-            do ij = 1, nele
-            diff = suma(ik,ij)-dnac(ik,ij)
-            write(210,300)ik,ij,suma(ik,ij),dnac(ik,ij)
-            end do
-           end do
-!        write(*,300)3,2,suma(3,2),dnac(3,2)
-! Write c_na
-!         do ia = 1, norbitals
-!          do ik = 1, norbitals
-!         write(*,100)ia,ik,cabs(c_na(ia,ik,1)),c_na(ia,ik,1)
-!         end do
-!        end do
-end if ! end if false     
+       end do
+    end do
+    
+    do ij = 1 , nac_vars%ntransitions
+       do ik = 1, nac_vars%ntransitions
+          nac_vars%dnac(ik,ij) = ((nac_vars%sumb(ik,ij)) - nac_vars%sumb(ij,ik))/(2.0d0*dt)
+       end do
+    end do
 
 
-  end subroutine delta_t_ks
+! analytical method, this can be added as an option, suma(ik,ij)= dij.V , 
+    delta = 0.5d0
+    nac_vars%suma = 0.0d0
+    do ik = 1 , nac_vars%ntransitions
+       do ij = 1 , nac_vars%ntransitions
+          do iatom = 1 , s%natoms
+             r1 = nac_vars%ratom_old(iatom)%a
+             r2 = s%atom(iatom)%ratom
+             v = (r2 - r1)/dt 
+             do ix = 1, 3
+                nac_vars%suma(ik,ij) = nac_vars%suma(ik,ij) + v(ix)*nac_vars%dij(ik,ij,iatom)%ftot(ix)
+             end do
+          end do
+       end do
+    end do    
+ 
+  end subroutine overlap_numeric
   
   subroutine evolve_ks_state(nac_vars,den_vars,s)
   type(T_NAC_vars), intent(inout) :: nac_vars
@@ -923,7 +1185,7 @@ end if ! end if false
       end do !nele
     end do !kpoints
 ! ===========================================================================
-  end FSSH
+  end subroutine FSSH
 
 
 !          subroutine NAC_do_something1(this)
