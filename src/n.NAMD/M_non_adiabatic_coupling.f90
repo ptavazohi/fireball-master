@@ -17,7 +17,6 @@ module M_non_adiabatic_coupling
      complex, allocatable :: c_na(:,:,:)
      type(T_forces), pointer :: dij(:,:,:)
      type(T_NAC_den), pointer :: band(:,:)
-     
      type(T_vector), pointer :: ratom_old(:)
   end type T_NAC_vars
 
@@ -68,15 +67,6 @@ contains
     ! we need to work with foccupy and ioccupy, they are in module density.f90, i will come back to them when I understand the reason of part
 
     ! Allocations
-    allocate (nac_vars%gover (3, numorb_max, numorb_max, neigh_max, natoms))
-    allocate (nac_vars%gover1c (3, numorb_max, numorb_max))
-    allocate (nac_vars%gh_2c    (3, numorb_max, numorb_max, neigh_max, natoms))
-    allocate (nac_vars%gh_atm   (3, numorb_max, numorb_max, neigh_max, natoms))
-    allocate (nac_vars%gh_3c    (3, natoms, numorb_max, numorb_max, neigh_max, natoms))
-    allocate (nac_vars%gh_pp_otr (3, numorb_max, numorb_max, neighPP_max, natoms))
-    allocate (nac_vars%gh_pp_otl (3, numorb_max, numorb_max, neighPP_max, natoms))
-    allocate (nac_vars%gh_pp_atm (3, numorb_max, numorb_max, neighPP_max, natoms))
-    allocate (nac_vars%gh_pp_3c (3, natoms, numorb_max, numorb_max, neighPP_max**2, natoms))
 
     allocate(nac_vars%c_na(nac_vars%ntransitions,nac_vars%ntransitions,nkpoints))
     allocate(nac_vars%ratom_old(3,natoms))
@@ -89,19 +79,6 @@ contains
     nac_vars%norbitals = norbitals
     nac_vars%nkpoints = nkpoints
     nac_vars%qztot = qztot
-
-    allocate (nac_vars%bbnkre(norbitals, norbitals, nkpoints))
-    allocate (nac_vars%blowre(norbitals, norbitals, nkpoints))
-    allocate (nac_vars%bbnkre_old(norbitals, norbitals, nkpoints))
-    allocate (nac_vars%blowre_old(norbitals, norbitals, nkpoints))
-
-    allocate (nac_vars%eigen_k(norbitals, nkpoints))
-
-    allocate (nac_vars%foccupy_na(norbitals, nkpoints))
-    allocate (nac_vars%ioccupy_na(norbitals, nkpoints))
-
-    allocate (nac_vars%foccupy_na_TS(norbitals, nkpoints))
-    allocate (nac_vars%ioccupy_na_TS(norbitals, nkpoints))
 
     nfermi = int(qztot) / 2
 
@@ -181,6 +158,7 @@ contains
     ! Need to use the HDF5
 
   end subroutine NAC_fileio
+
   subroutine NAC_change_occupations(nac_vars)
     type(T_NAC_vars), intent(out) :: nac_vars
 
@@ -1008,156 +986,42 @@ contains
   end subroutine overlap_numeric
   
   subroutine evolve_ks_state(nac_vars,den_vars,s)
-  type(T_NAC_vars), intent(inout) :: nac_vars
-  type(T_density_MDET), intent(inout) :: den_vars
-  type(T_structure), intent(in) :: s
-  
-  do iele = 1, nac_vars%ntransitions
-    iband = nac_vars%map_ks(iele)
-    do ikpoint = 1, den_vars%nkpoints
-      eigen_1(iele,ikpoint) = eigen_k(iband,ikpoint)
-      eigen_0(iele,ikpoint) = eigen_old(iband,ikpoint)
-    end do ! end loop on ikpoint
-  end do ! end loop on iele
-  ddt = dt / nac_vars%nddt
-  deig = (eigen_1 - eigen_0)/nac_vars%nddt
-  dvatom = (vatom - vatom_old)/nac_vars%nddt
-  dgks = (gks - gks_old)/nac_vars%nddt
-  ddnac = (dnac - dnac_old)/nac_vars%nddt
-! Time Loop
-  do it = 1 , nddt
-! step 1
-! Interpolation
-    v = vatom_old + dvatom*(it - 1)
-    g = gks_old + dgks*(it - 1)
-    eig = eigen_0 + deig*(it - 1)
-    nonac = dnac + ddnac*(it - 1)
-    c_aux = c_na
-! Calculate derivative d/dt c_na(t)
-    call dcdt_nac (v, g, nonac, eig, c_aux, dc_na, s%natoms, nac_vars%ntransitions,den_vars%nkpoints, s%norbitals)
-    dc_aux = dc_na/6.0d0
-! step 2
-! Interpolation
-    v = vatom_old + dvatom*(it - 0.5d0)
-    g = gks_old + dgks*(it - 0.5d0)
-    eig = eigen_0 + deig*(it - 0.5d0)
-    nonac = dnac + ddnac*(it - 0.5d0)
-    c_aux = c_na + dc_na*ddt*0.5d0
-! Calculate derivative d/dt c_na(t)
-    call dcdt_nac (v,g,nonac,eig,c_aux,dc_na,s%natoms,nac_vars%ntransitions,den_vars%nkpoints,s%norbitals)
-    dc_aux = dc_aux + dc_na/3.0d0
-!
-! step 3
-! Interpolation
-    v = vatom_old + dvatom*(it - 0.5d0)
-    g = gks_old + dgks*(it - 0.5d0)
-    eig = eigen_0 + deig*(it - 0.5d0)
-    nonac = dnac + ddnac*(it - 0.5d0)
-    c_aux = c_na + dc_na*ddt*0.5d0
-! Calculate derivative d/dt c_na(t)
-    call dcdt_nac (v,g,nonac,eig,c_aux,dc_na,s%natoms,nac_vars%ntransitions,den_vars%nkpoints,s%norbitals)
-!         call dcdt_nac (nonac,eig,c_aux,dc_na,natoms,nele,nkpoints)
-! JOM-test
-!       write(*,*) 'tercera llamada a dcdt, it =',it
-!        write(*,*)'c_na',c_na(2,2,1),c_aux(2,2,1),dc_na(2,2,1)
-    dc_aux = dc_aux + dc_na/3.0d0
-! step 4
-! Interpolation
-    v = vatom_old + dvatom*(it)
-    g = gks_old + dgks*(it)
-    eig = eigen_0 + deig*(it)
-    nonac = dnac + ddnac*(it - 0.5d0)
-    c_aux = c_na + dc_na*ddt
-! Calculate derivative d/dt c_na(t)
-    call dcdt_nac (v,g,nonac,eig,c_aux,dc_na,s%natoms,nac_vars%ntransitions,den_vars%nkpoints,s%norbitals)
-!         call dcdt_nac (nonac,eig,c_aux,dc_na,natoms,nele,nkpoints)
-! JOM-test
-!       write(*,*) 'cuarta llamada a dcdt, it =',it
-!        write(*,*)'c_na',c_na(2,2,1),c_aux(2,2,1),dc_na(2,2,1)
-    dc_aux = dc_aux + dc_na/6.0d0
-!
-!
-! Integrate coefficients c_na
-    nac_vars%c_na = nac_vars%c_na + dc_aux*ddt
-! JOM-test
-!       write(*,*) 'hacemos c_na = c_na + dc_aux*dt, it =',it
-!        write(*,*)'c_na',c_na(2,2,1),c_aux(2,2,1),dc_na(2,2,1)
-
-  end do ! end loop on it
-  nac_vars%stage = 'C_na'
-  call NAC_io(nac_vars%stage)
-!  do iele = 1 , nac_vars%ntransitions
-!    do jele = 1 , nac_vars%ntransitions
-!   end do ! end loop on jele
-!  end do ! end loop iele
 
   end subroutine evolve_ks_state  
-  subroutine FSSH(nac_vars,den_vars,s, itime_step)
-  type(T_NAC_vars), intent(inout) :: nac_vars
-  type(T_density_MDET), intent(in) :: den_vars
-  type(T_structure), intent(in) :: s
-! Procedure
-! ===========================================================================
-    aim = cmplx(0.0d0, 1.0d0)
-    a0 = cmplx(0.0d0, 0.0d0)
-    a1 = cmplx(1.0d0, 0.0d0)
-!----------------------------------------------------------
-! Initialize seed for random_number
-    call random_seed
-!----------------------------------------------------------
+  
 
-!JOM-info : I assume that nkpoints = 1
-!----------------------------------------------------------
-!    if (nkpoints .gt. 1) then
-!      write(*,*)'nkpoints=',nkpoints
-!      write(*,*)'nkpoints is greater then 1'
-!      write(*,*)'in subroutine fewest_switches'
-!      write(*,*)'not ready, must stop'
-!      stop
-!    end if
-!----------------------------------------------------------
+
+  subroutine FSSH(nac_vars,s, itime_step)
+    integer ij, ik, iswitch
+    real xrand, aux, ajj, bkj
+    complex akj
+    real, dimansion(nac%vars) :: prob
+    type(T_NAC_vars), intent(inout) :: nac_vars
+    type(T_structure), intent(in) :: s
+    
+! ===========================================================================
 ! Calculate hopping probabilities for fewest switches
-! map_ks(iele) gives back the corresponding adiabatic KS state
+! map_ks(iband) gives back the corresponding adiabatic KS state
 ! we follow the possible transitions associated with states
-! iele=1,nele
-    do ikpoint = 1, den_vars%nkpoints
-      do ij = 1, nac_vars%ntransitions
+! the reason using ij and ik to match the formula from the paper
+    do ij = 1, nac_vars%ntransitions
 !----------------------------------------------------------
 ! Random numbers for Monte-Carlo
-        call random_number(xrand)
-!----------------------------------------------------------
-! JOM-test
-       nac_vars%stage = 'Random no'
-       call NACio(nac_vars%stage)
-!      read (2121,*) xrand   ! debug vlad
-!----------------------------------------------------------
-       ajj = real(conjg(nac_vars%c_na(ij,ij,den_vars%ikpoint))*c_na(ij,ij,den_vars%ikpoint))
-       do ik = 1, nac_vars%ntransitions
-         akj = c_na(ij,ik,den_vars%ikpoint)*conjg(c_na(ij,ij,den_vars%ikpoint))
-         bkj = -2.0d0*real(conjg(akj)*nac_vars%dnac(ik,ij))
+       call random_number(xrand)
+       ajj = real(conjg(nac_vars%c_na(ij,ij,1))*nac_vars%c_na(ij,ij,1))
+       do ik = 1 , nac_vars%ntransitions
+          akj = nac_vars%c_na(ij,ik,1)*conjg(nac_vars%c_na(ij,ik,1))
+          bkj = -2.0d0*real(conjg(akj)*nac_vars%dnac(ik,ij))
 ! JOM-warning: may be later we can "imporve" this by using eq(29) in JCP
 ! 101 4657 (1994)
 !----------------------------------------------------------
-!JOM-info : probability of the j ---> k transition
-         prob(ik) = bkj*dt/ajj
-         nac_vars%stage = 'probability'
-         call NACio(nac_vars%stage)
-!         write(*,*)'prob',ij,ik,prob(ik)
-         if (prob(ik) .lt. 0.0d0) then
-           prob(ik) = 0.0d0
-         end if
-!----------------------------------------------------------
-! JOM-test
-!          if(prob(ik) .gt. 0.0001) then
-!          write(*,*)'prob',ij,ik,prob(ik)
-!          write(*,*)'akk', real(conjg(c_na(ia,ik,ikpoint))*c_na(ia,ik,ikpoint))
-!          write(*,*)'ajj',ajj
-!          write(*,*)'akj',akj
-!          write(*,*)'bkj,dt',bkj,dt
-!          end if
-!----------------------------------------------------------
-        end do ! do ik = 1, nele
-!----------------------------------------------------------
+! probability of the jband ---> kband transition
+          prob(ik) = bkj*dt/ajj
+          write(*,*)'prob',ij,ik,prob(ik) ! move this to io subroutine
+          if (prob(ik) .lt. 0.0d0) then
+             prob(ik) = 0.0d0
+          end if
+       end do ! ik
 !----------------------------------------------------------
 ! Monte-Carlo calculation for possible transitions
 ! JOM-warning : we should also allow transitions to states that are not
@@ -1165,27 +1029,212 @@ contains
 ! ioccupy_na = 1, 2 ]. Use iocc for this (fix later)
 !         iocc (ik) = ioccupy_na (ik, ikpoint)
 !----------------------------------------------------------
-        call mc_switch (xrand, nele, prob, ij, ikpoint, iswitch)
-!----------------------------------------------------------
-! JOM-test
-!       write(*,*)'nele',nele,iele,ia,ij
-!       write(*,*)'xrand',xrand
-!       write(*,*)'iswitch',iswitch
-!----------------------------------------------------------
-        if (iswitch .ne. 0) then
-          nac_vars%stage = 'switch'
-          call NACio(nac_vars%stage)
+       call mc_switch (xrand, nac_vars%ntransitions, prob, ij, iswitch)
+       
+       if (iswitch .ne. 0) then
+          write(*,*)'SWITCH!!',ij, '--->',iswitch ! move it to NACio
 !----------------------------------------------------------
 ! perform transition ij ---> iswitch
-          call transition (itime_step, ij, iswitch, ikpoint)
+         call transition (itime_step, ij, iswitch, ikpoint)   
 !----------------------------------------------------------
-          return  ! we can only have one switch
-        end if
+         return  ! we can only have one switch
+      end if
+   end do ! ij
+ 
+ end subroutine FSSH
 
-      end do !nele
-    end do !kpoints
+ subroutine mc_switch(xr, ntransitions, prob, ij, is) 
+   integer ij,is,ntransitions
+   integer ij, ik 
+   integer jband, kband
+   real xr
+   real aux
+   real, dimenstions(ntransitions), intent(in) :: prob
+! Procedure
 ! ===========================================================================
-  end subroutine FSSH
+! Check that sum of probabilities is smaller than 1
+   aux = 0.0d0
+   do ik = 1, ntransitions
+! Consider only allowed transitions
+      jband = nac_vars%map_ks(ij)
+      kband = nac_vars%map_ks(ik)
+      if (nac_vars%ioccupy_na(jband,1) .gt. 0) then
+         if (nac_vars%ioccupy_na(kband,1) .lt. 2) then
+            aux = aux + prob(ik)
+         end if
+      end if
+   end do
+   if (aux .gt. 1.0d0) then ! this might never happen and move the write to NACio
+      write(*,*)'sum of probabilities greater than 1'
+      write(*,*)'in mc_switches.f90'
+      write(*,*)'total probabilty', aux
+      write(*,*)'for state', ij
+      do ik = 1, n
+         write(*,*)'prob',ik,prob(k)
+      end do
+              write(*,*)'must stop' ! this was commented in the old code!! don't know why.
+              stop
+   end if
+   is = 0 
+   aux = 0.0d0
+! Consider only allowed transitions
+   do ik = 1, ntransition
+      jband = map_ks(ij)
+      kband = map_ks(ik)
+      if (nac_vars%ioccupy_na(jband,1) .gt. 0) then     
+          if (nac_vars%ioccupy_na(kband,1) .lt. 2) then    
+             aux = aux + pr(ik)
+             if (aux .gt. xr) then
+                is = ik
+                do ij = 1, ntransition
+                   write(*,*)'prob',ij,prob(ij)
+                end do
+                exit
+             end if
+          end if
+       end if
+    end do
+!----------------------------------------------------------
+! If is = 0, no switch (hopping) between states
+! Otherwise, switch from current state ( "ij" = map_ks(iele) in
+! fewest_switches subroutine) to state "is"
+!----------------------------------------------------------
+    return 
+  end subroutine mc_switch
+
+subroutine transition(itime_step, ij,is,s,nac_vars) ! there are 3 subroutine in old code by this name I have used transition.f90 according to make file
+  integer, intent(in) :: itime_step, ij, is
+  
+  integer jband, kband
+  integer iatom,ix
+  real ejump, ener
+  real aa,bb,cc
+  real alpha
+  real xm
+  real tkinetic
+  real, parameter :: tolaa = 1.0d-8
+  ! introduce the pointers
+
+
+  jband = nac_vars%map_ks(ij)
+  kband = nac_vars%map_ks(is)
+  s%kpoints(1)%foccupy(jband) = s%kpoints(1)%ioccupy(jband) - 1
+  s%kpoints(1)%foccupy(jband) = s%kpoints(1)%foccupy(jband) - 0.50d0
+  s%kpoints(1)%ioccupy(kband) = s%kpoints(1)%ioccupy(kband) + 1
+  s%kpoints(1)%foccupy(kband) = s%kpoints(1)%foccupy(kband) + 0.50d0
+
+  ejump = s%kpoints(1)%eigen(kband) - s%kpoints(1)%eigen(jband)
+  write(*,*)'ejump (eV) =', ejump  ! move this to NACio
+  ener = ejump*P_fovermp
+  write(*,*)'ener (dynamical units)=', ener ! move this to NACio
+! ===========================================================================
+! Find out if transition ij --> is is accesible (i.e. if there is enough
+! kinetic energy 
+!----------------------------------------------------------
+ ! I skiped a step which prints the dij again
+  aa = 0.0d0
+  bb = 0.0d0
+  do iatom = 1, s%natoms
+     ! cut some lengthy notation
+     pdij => nac_vars%dij(ij,is,iatom)%ftot
+     pvatom => s%atom(iatom)%vatom
+     in1 = s%atom(iatom)%imass
+     xm = species(in1)%xmass
+     do ix = 1,3
+        aa = aa + 0.50d0*( pdij**2 )/xm
+        bb = bb + pvatom(ix)*pdij(ix) 
+     end do ! ix
+  end do ! iatom
+!----------------------------------------------------------
+  write(*,*)'aa, 4*ener*aa =', aa, 4.0d0*aa*ener ! move to NACio
+  write(*,*)'bb, bb**2=', bb, bb**2 ! move to NACio
+  cc = bb**2 - 4.0d0*aa*ener
+  write(*,*)'cc=', cc !Move to NACio
+! ===========================================================================
+  if (aa .gt. tolaa) then
+!----------------------------------------------------------
+! the transition is accepted
+     if (cc .ge. 0.0d0) then
+        write(*,*)'transition accepted'
+!----------------------------------------------------------
+        if (bb .ge. 0.0d0) then
+           alfa = (bb - sqrt(cc))/(2.0d0*aa)
+        else
+           alfa = (bb + sqrt(cc))/(2.0d0*aa)
+        end if
+!----------------------------------------------------------
+     else !(cc .ge. 0.0d0)
+! the transition is NOT accepted
+        write(*,*)'transition NOT accepted' ! Move to NACio
+!----------------------------------------------------------
+        s%kpoints(1)%foccupy(jband) = s%kpoints(1)%ioccupy(jband) + 1
+        s%kpoints(1)%foccupy(jband) = s%kpoints(1)%foccupy(jband) + 0.50d0
+        s%kpoints(1)%ioccupy(kband) = s%kpoints(1)%ioccupy(kband) - 1
+        s%kpoints(1)%foccupy(kband) = s%kpoints(1)%foccupy(kband) - 0.50d0
+! Define alfa for re-scaling velocities
+! JOM-info : two possibilities: a) Do nothing; b) Reflection
+! a) Do nothing
+! b) Reflection (see JCP 101, 4657 (1994), pag. 4664)
+        alfa = bb/aa
+     end if  !(cc .ge. 0.0d0)
+  else  !(aa .gt. tolaa)
+     alfa = 0.0d0
+  end if  !(aa .gt. tolaa)
+  write(*,*)'alfa=', alfa ! move to NACio
+! ===========================================================================
+  do iatom = 1 , s%natoms
+     write(*,*)'vatom-B',  (s%atom(iatom)%vatom(ix) , ix = 1,3)
+  end do
+!----------------------------------------------------------
+  tkinetic = 0.0d0
+  do iatom = 1, s%natoms
+     in1 = s%atom(iatom)%imass
+     xm = species(in1)%xmass
+     ! cut some lengthy notation
+     pvatom => s%atom(iatom)%vatom
+     tkinetic = tkinetic                                            &
+          &       + (0.5d0/P_fovermp)*xm                             &
+          &      *(pvatom(1)**2 + pvatom(2)**2 + pvatom(3)**2)
+  end do
+  write(*,*)'KINETIC=',tkinetic ! move to NACio
+!----------------------------------------------------------
+
+!----------------------------------------------------------
+! RESCALING VELOCITIES
+  do iatom = 1, s%natoms
+     do ix = 1, 3
+        ! cut some lengthy notation
+        pdij => nac_vars%dij(ij,is,iatom)%ftot
+        pvatom => s%atom(iatom)%vatom
+        in1 = s%atom(iatom)%imass
+        xm = species(in1)%xmass
+        pvatom (ix) = pvatom (ix) - alfa*pdij(ix)/xm
+     end do ! ix
+  end do ! iatom
+!----------------------------------------------------------
+!----------------------------------------------------------
+  do iatom = 1, s%natoms
+     write(*,*)'vatom-A',  (s%atom(iatom)%vatom (ix), ix = 1,3)
+  end do
+!----------------------------------------------------------
+!----------------------------------------------------------
+  tkinetic = 0.0d0
+  do iatom = 1, s%natoms
+     in1 = s%atom(iatom)%imass
+     xm = species(in1)%xmass
+     ! cut some lengthy notation
+     pvatom => s%atom(iatom)%vatom
+     tkinetic = tkinetic                                            &
+          &       + (0.5d0/P_fovermp)*xm                             &
+          &      *(pvatom(1)**2 + pvatom(2)**2 + pvatom(3)**2)
+  end do
+  write(*,*)'KINETIC=',tkinetic ! move to NACio
+
+
+
+
+end subroutine transition
+
 
 
 !          subroutine NAC_do_something1(this)
