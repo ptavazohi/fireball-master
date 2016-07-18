@@ -12,22 +12,27 @@ module M_non_adiabatic_coupling
      integer ::  nac_inpfile = 123
      integer :: ntransitions
      real, allocatable :: c_old(:,:)
-     real, allocatable :: suma(:,:)
-     real, allocatable :: sumb(:,:)
+     real, allocatable :: suma(:,:)  !< dij.V analytical
+     real, allocatable :: sumb(:,:)  !< dij.V numerical
+     real, allocatable :: dnac(:,:)
+     real, allocatable :: dnac_old(:,:)
      complex, allocatable :: c_na(:,:,:)
      type(T_forces), pointer :: dij(:,:,:)
      type(T_NAC_den), pointer :: band(:,:)
      type(T_vector), pointer :: ratom_old(:)
+     type(T_vector), pointer :: vatom_old(:)
+
   end type T_NAC_vars
 
 contains
 
-  subroutine NAC_initialize(nac_vars, natoms, numorb_max, neigh_max, neighPP_max, ztot, nkpoints)
-
+  subroutine NAC_initialize(nac_vars, s)
+    implicit none
     !Arguments
     type(T_NAC_vars), intent(inout) :: nac_vars
-    integer, intent(in) :: natoms, numorb_max, neigh_max, neighPP_max, nkpoints
-    real, intent(in) :: ztot
+    type(T-structure), intent(in) :: s
+
+    integer nac_inpfile
 
     integer istate
     integer stage
@@ -36,59 +41,73 @@ contains
     integer :: nfermi
     integer numorb_max,norbitals
 
-    norbitals = numorb_max
-    open (unit = nac_vars%nac_inpfile, file = 'mdet.inp', status = 'old')
+    complex a0,a1
+
+    nac_inpfile = nac_vars%nac_inpfile
+    open (unit = nac_inpfile, file = 'mdet.inp', status = 'old')
     ! Note : ntransitions is equal to nele in the old code
-    read (nac_vars%nac_inpfile,*) nac_vars%ntransitions
+    read (nac_inpfile,*) nac_vars%ntransitions
     ntransitions = nac_vars%ntransitions
     stage = 1
     allocate(nac_vars%dij(ntransitions,ntransitions,s%natoms))
+    ! Initialize NACs to zero
+    do iatom = 1, s%natoms
+       ! band-structure interactions
+       nac_vars%dij(:,:,iatom)%kinetic = 0.0d0
+       nac_vars%dij(:,:,iatom)%vna = 0.0d0
+       nac_vars%dij(:,:,iatom)%vxc = 0.0d0
+       nac_vars%dij(:,:,iatom)%vnl = 0.0d0
+       nac_vars%dij(:,:,iatom)%ewald = 0.0d0
+       
+       ! corrections to the force
+       nac_vars%dij(:,:,iatom)%usr = 0.0d0
+       nac_vars%dij(:,:,iatom)%pulay = 0.0d0
+       
+       ! three-center interactions
+       nac_vars%dij(:,:,iatom)%f3naa = 0.0d0
+       nac_vars%dij(:,:,iatom)%f3nab = 0.0d0
+       nac_vars%dij(:,:,iatom)%f3nac = 0.0d0
+       nac_vars%dij(:,:,iatom)%f3xca = 0.0d0
+       nac_vars%dij(:,:,iatom)%f3xcb = 0.0d0
+       nac_vars%dij(:,:,iatom)%f3xcc = 0.0d0
+       nac_vars%dij(:,:,iatom)%ftot  = 0.0d0
+    end do
     allocate(nac_vars%band(ntransitions,ntransitions))
     allocate(nac_vars%c_na(ntransition,ntransitions,1))
-    ! allocating map_ks, map_proj and iocc, these are in the nonadiabatic.f90 module in the old code, i have to create them here later
+! allocating map_ks, map_proj and iocc, these are in the nonadiabatic.f90 module in the old code, i have to create them here later
     allocate(nac_vars%map_ks(nac_vars%ntransitions))
     allocate(nac_vars%map_proj(nac_vars%ntransitions))
     allocate(nac_vars%iocc(nac_vars%ntransitions))
     ! Reading the transitions from mdet.inp file
     do istate = 1, nac_vars%ntransitions
-       read (nac_vars%nac_inpfile,*) iband, nac_vars%iocc(istate)
+       read (nac_inpfile,*) iband, nac_vars%iocc(istate)
        nac_vars%map_ks(istate) = iband
     end do
     close(nac_vars%nac_inpfile)
-
-    ! Allocating variables gks, dnac, don't know what they do yet, these variables are in old nonadiabatic.f90 module
-    allocate (nac_vars%gks(3, natoms,nac_vars%ntransitions,nac_vars%ntransitions))
-    allocate (nac_vars%gks_old(3, natoms,nac_vars%ntransitions,nac_vars%ntransitions))
+! allocate dnac
     allocate (nac_vars%dnac(nac_vars%ntransitions, nac_vars%ntransitions))
     allocate (nac_vars%dnac_old(nac_vars%ntransitions, nac_vars%ntransitions))
    
  ! Need allocation for imdet = 2, deal with it later
-
-    ! we need to work with foccupy and ioccupy, they are in module density.f90, i will come back to them when I understand the reason of part
-
-    ! Allocations
-
     allocate(nac_vars%c_na(nac_vars%ntransitions,nac_vars%ntransitions,nkpoints))
-    allocate(nac_vars%ratom_old(3,natoms))
-    allocate(nac_vars%vatom_old(3,natoms))
-    allocate(nac_vars%eigen_old(numorb_max,nkpoints))
+    allocate(nac_vars%ratom_old(natoms))
+    allocate(nac_vars%vatom_old(natoms))
+! These three need modification, and they might be allocated at some othe place in density, check them again
+    allocate(s%kpoints(1)%eigen_old(s%norbitals))
+    allocate(s%kpoints(1)%eigen(s%norbitals))
+    allocate(s%kpoints(1)%c_Lowdin(s%norbitals,s%norbitals))
     allocate(nac_vars%eigen_1(nac_vars%ntransitions,nkpoints))
     allocate(nac_vars%eigen_0(nac_vars%ntransitions,nkpoints))
     ! MOved from M_density_MDET.f90 to here
 
-    nac_vars%norbitals = norbitals
-    nac_vars%nkpoints = nkpoints
-    nac_vars%qztot = qztot
+    nfermi = int(s%ztot) / 2
 
-    nfermi = int(qztot) / 2
-
-    do ikpoint = 1, nkpoints
-       do iband = 1, nfermi
-          nac_vars%foccupy_na (iband,ikpoint) = 1.0d0
-          nac_vars%ioccupy_na (iband, ikpoint) = 2
-          nac_vars%foccupy_na_TS (iband,ikpoint) = 1.0d0
-          nac_vars%ioccupy_na_TS (iband, ikpoint) = 2
-       end do
+   
+    do iband = 1, nfermi
+       nac_vars%foccupy_na (iband,ikpoint) = 1.0d0
+       nac_vars%ioccupy_na (iband, ikpoint) = 2
+       nac_vars%foccupy_na_TS (iband,ikpoint) = 1.0d0
+       nac_vars%ioccupy_na_TS (iband, ikpoint) = 2
     end do
     if (int(qztot) .gt. 2*nfermi) then
        do ikpoint = 1, nkpoints
@@ -201,53 +220,31 @@ contains
 
   subroutine NAC_build_dij(nac_vars,s)
     type(T_NAC_vars), intent(inout) :: nac_vars
-    type(T_structure), intent(in) :: s
+!    type(T_structure), intent(in) :: s
 
-!!$       implicit none
-!!$        include '../include/constants.h'
-!!$
-!!$! Argument Declaration and Description
-!!$! ===========================================================================
-!!$        type(T_structure), target :: s            !< the structure to be used
-!!$
-!!$! Local Parameters and Data Declaration
-!!$! ===========================================================================
-!!$! None
-!!$
-!!$! Local Variable Declaration and Description
-!!$! ===========================================================================
-!!$        integer iatom                   !< counter over atoms/neighbors
-!!$
-!!$! Allocate Arrays
-!!$! ===========================================================================
-!!$! Forces are stored in a Type with each piece, this makes acessing them and use
-!!$! pretty easy across the game.
-!!$        allocate (s%forces (s%natoms))
-!!$
-!!$! Procedure
-!!$! ===========================================================================
-!!$! Initialize forces to zero
-!!$        do iatom = 1, s%natoms
-!!$          ! band-structure interactions
-!!$          s%forces(iatom)%kinetic = 0.0d0
-!!$          s%forces(iatom)%vna = 0.0d0
-!!$          s%forces(iatom)%vxc = 0.0d0
-!!$          s%forces(iatom)%vnl = 0.0d0
-!!$          s%forces(iatom)%ewald = 0.0d0
-!!$
-!!$          ! corrections to the force
-!!$          s%forces(iatom)%usr = 0.0d0
-!!$          s%forces(iatom)%pulay = 0.0d0
-!!$
-!!$          ! three-center interactions
-!!$          s%forces(iatom)%f3naa = 0.0d0
-!!$          s%forces(iatom)%f3nab = 0.0d0
-!!$          s%forces(iatom)%f3nac = 0.0d0
-!!$          s%forces(iatom)%f3xca = 0.0d0
-!!$          s%forces(iatom)%f3xcb = 0.0d0
-!!$          s%forces(iatom)%f3xcc = 0.0d0
-!!$          s%forces(iatom)%ftot  = 0.0d0
-!!$        end do
+       implicit none
+        include '../include/constants.h'
+
+! Argument Declaration and Description
+! ===========================================================================
+        type(T_structure), target :: s            !< the structure to be used
+
+! Local Parameters and Data Declaration
+! ===========================================================================
+! None
+
+! Local Variable Declaration and Description
+! ===========================================================================
+        integer iatom                   !< counter over atoms/neighbors
+
+! Allocate Arrays
+! ===========================================================================
+! Forces are stored in a Type with each piece, this makes acessing them and use
+! pretty easy across the game.
+
+! Procedure
+! ===========================================================================
+
 !!$
 !!$! Format Statements
 !!$! ===========================================================================
