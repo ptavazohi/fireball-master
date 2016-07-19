@@ -21,8 +21,13 @@ module M_non_adiabatic_coupling
      real allocatable :: foccupy_na(:,:)      !< These can be sotred in a T_kpoint type for different kpoint, here we are only going to allocate for 1 kpoint
      integer allocatable :: ioccupy_na_TS(:,:)!< These can be sotred in a T_kpoint type for different kpoint, here we are only going to allocate for 1 kpoint 
      real allocatable :: foccupy_na_TS(:,:)   !< These can be sotred in a T_kpoint type for different kpoint, here we are only going to allocate for 1 kpoint
-     real 
+
+     real, allocatable :: eigen_old(:)
+     real, allocatable :: eigen_0(:)
+     real, allocatable :: eigen_1(:)
+
      type(T_forces), pointer :: dij(:,:,:)
+     type(T_forces), pointer :: dij_old(:,:,:)
      type(T_NAC_den), pointer :: band(:,:)
      type(T_vector), pointer :: ratom_old(:)
      type(T_vector), pointer :: vatom_old(:)
@@ -66,6 +71,7 @@ contains
     ntransitions = nac_vars%ntransitions
     stage = 1
     allocate(nac_vars%dij(ntransitions,ntransitions,s%natoms))
+    allocate(nac_vars%dij_old(ntransitions,ntransitions,s%natoms))
     ! Initialize NACs to zero
     do iatom = 1, s%natoms
        ! band-structure interactions
@@ -119,6 +125,21 @@ contains
     allocate(nac_vars%foccupy_na(s%norbitals,1))
     allocate(nac_vars%ioccupy_na_TS(s%norbitals,1))
     allocate(nac_vars%foccupy_na_TS(s%norbitals,1))
+
+
+
+
+    allocate (nac_vars%eigen_old(nac_vars%ntransitions,1))
+    allocate (eigen_1(nac_vars%ntransitions,1))
+    allocate (eigen_0(nac_vars%ntransitions,1))
+    nac_vars%vatom_old(iatom)%a = s%atom(iatom)%vatom
+    !        gks_old                = gks
+    nac_vars%eigen_old      = t%kpoints(1)%eigen 
+    nac_vars%dnac_old       = nac_vars%dnac
+
+
+
+
 ! Initializing the occupation numbers
     nac_vars%ioccupy_na = 0
     nac_vars%foccupy_na = 0.0d0
@@ -1138,10 +1159,248 @@ contains
  
   end subroutine NAterm_analytic
   
-  subroutine evolve_ks_state(nac_vars,den_vars,s)
+ !############################
+!subroutine evolve_ks_states
+!############################ 
+  subroutine evolve_ks_state(nac_vars,den_vars,s,itime_step)
+    implicit none
+    
+    type(T-structure), intent(in) :: s
+    type(T_NAC_vars), intent(inout) :: nac_vars
+    integer, intent(in) :: itime_step
 
-  end subroutine evolve_ks_state  
-  
+! Local Variable Declaration and Description
+! ===========================================================================
+    integer ikpoint
+    integer iatom
+    integer itransition
+    integer jtransition
+    integer iorbital
+    integer jorbital
+    integer ix
+    integer it
+    complex aim, a1, a0
+    real, dimension    (3,s%natoms) :: vatom
+    real, dimension    (3,s%natoms) :: vatom_old
+    real, dimension    (3,s%natoms) :: v
+    real, dimension    (3,s%natoms,nac_vars%ntransitions,nac_vars%ntransitions) :: g
+    real, dimension    (nac_vars%ntransitions, nac_vars%ntransitions) :: nonac
+    complex, dimension (nac_vars%ntransitions, nac_vars%ntransitions, s%nkpoints) :: c_aux
+    real, dimension (nac_vars%ntransitions,nac_vars%ntransitions) :: nonac  ! aux num nanadiabatic term
+    real, dimension (nac_vars%ntransitions, s%nkpoints) :: deig
+    real, dimension (nac_vars%ntransitions, s%nkpoints) :: eig
+    complex, dimension nac_vars%ntransitions,nac_vars%ntransitions,s%nkpoints) :: dc_na
+    real dt
+    real ddt
+    real nddt
+    real delta
+    
+! Allocate Arrays
+! ===========================================================================
+!
+! Initialize
+! ===========================================================================
+ 
+    nddt = 100
+    aim = cmplx(0.0d0, 1.0d0)
+    a0 = cmplx(0.0d0, 0.0d0)
+    a1 = cmplx(1.0d0, 0.0d0)
+    do iatom = 1 , s%natoms
+       vatom(:,iatom) = s%atom(iatom)%vatom(:)
+       vatom_old(:,iatom) = nac-vars%vatom_old(iatom)%a(:) 
+    end do
+     
+    do itransition = 1, nac_vars%ntransitions
+       iband = nac_vars%map_ks(itransition)
+       nac_vars%eigen_1(itransition,1) = nac_vars%eigen_k(iband,1)
+       nac_vars%eigen_0(itransition,1) = nac_vars%eigen_old(iband,1)
+    end do
+    
+    ddt    = dt / nddt
+    deig   = (nac_vars%eigen_1(:) - nac_vars%eigen_0(:))/nddt
+
+    dvatom = (vatom - vatom_old)/nddt
+    !        dgks   = (gks - gks_old)/nddt
+    ddnac  = (nac_vars%dnac(:,:) - nac_vars%dnac_old(:,:))/nddt
+ 
+! Procedure
+! ===========================================================================
+
+
+! ===========================================================================
+! Time Loop
+    do it = 1, nddt
+! step 1 !!!!!!!!!!!!!!
+! Interpolation 
+!         v = vatom_old + dvatom*(it - 1)  !  velocity 
+!         g = gks_old + dgks*(it - 1)      !  non-adiabatic coupling vector (analyt) use later,
+       eig = eigen_0 + deig*(it - 1)
+       nonac = dnac + ddnac*(it - 1)
+       c_aux = nac_var%c_na
+! Calculate derivative d/dt c_na(t)
+!         call dcdt_nac (v,g,nonac,eig,c_aux,dc_na,natoms,nele,nkpoints,norbitals)
+       call dcdt_nac (s,nac_vars,nonac,eig,c_aux,dc_na) 
+! JOM-test
+!        write(*,*) 'primera llamada a dcdt, it =',it
+!        write(*,*)'c_na',c_na(2,2,1),c_aux(2,2,1),dc_na(2,2,1)
+       dc_aux = dc_na/6.0d0
+! step 2 !!!!!!!!!!!!!!
+! Interpolation 
+       v = vatom_old + dvatom*(it - 0.5d0)
+!       g = gks_old + dgks*(it - 0.5d0)
+       eig = eigen_0 + deig*(it - 0.5d0)
+       nonac = dnac + ddnac*(it - 0.5d0)
+       c_aux = nac_var%c_na + dc_na*ddt*0.5d0
+! Calculate derivative d/dt c_na(t)
+!         call dcdt_nac (v,g,nonac,eig,c_aux,dc_na,natoms,nele,nkpoints,norbitals)
+       call dcdt_nac (s,nac_vars,nonac,eig,c_aux,dc_na) 
+
+!        write(*,*)'c_na',c_na(2,2,1),c_aux(2,2,1),dc_na(2,2,1)
+       dc_aux = dc_aux + dc_na/3.0d0
+! step 3 !!!!!!!!!!!!!!
+! Interpolation 
+       v = vatom_old + dvatom*(it - 0.5d0)
+!       g = dij_old + dgks*(it - 0.5d0)
+       eig = eigen_0 + deig*(it - 0.5d0)
+       nonac = dnac + ddnac*(it - 0.5d0)
+       c_aux = nac_var%c_na + dc_na*ddt*0.5d0
+! Calculate derivative d/dt c_na(t)
+!         call dcdt_nac (v,g,nonac,eig,c_aux,dc_na,natoms,nele,nkpoints,norbitals)
+       call dcdt_nac (s,nac_vars,nonac,eig,c_aux,dc_na) 
+! JOM-test
+!        write(*,*) 'tercera llamada a dcdt, it =',it
+!        write(*,*)'c_na',c_na(2,2,1),c_aux(2,2,1),dc_na(2,2,1)
+       dc_aux = dc_aux + dc_na/3.0d0
+! step 4 !!!!!!!!!!!!!!
+! Interpolation 
+!       v = nac_vars%vatom(:)%a
+       v = vatom_old + dvatom*(it)
+!       g = gks_old + dgks*(it)
+       eig = eigen_0 + deig*(it)
+       nonac = dnac + ddnac*(it - 0.5d0)
+       c_aux = nac_var%c_na + dc_na*ddt
+! Calculate derivative d/dt c_na(t)
+!         call dcdt_nac (v,g,nonac,eig,c_aux,dc_na,natoms,nele,nkpoints,norbitals)
+       call dcdt_nac (s,nac_vars,nonac,eig,c_aux,dc_na)
+! JOM-test
+!        write(*,*) 'cuarta llamada a dcdt, it =',it
+!        write(*,*)'c_na',c_na(2,2,1),c_aux(2,2,1),dc_na(2,2,1)
+       dc_aux = dc_aux + dc_na/6.0d0
+!
+! Integrate coefficients c_na
+       nac_var%c_na = nac_var%c_na + dc_aux*ddt
+! JOM-test
+!        write(*,*) 'hacemos c_na = c_na + dc_aux*dt, it =',it
+!        write(*,*)'c_na',c_na(2,2,1),c_aux(2,2,1),dc_na(2,2,1)
+
+! end Time loop
+    end do
+
+
+! ===========================================================================
+! Calculate d/dt c_{ak} at different time steps in between t and t+dt
+! tt(it) = t + dt/Nsteps * it . We need to interpolate the values for
+! eigen_k, vatom, gks, using their values at t and t+dt. We start using
+! a simple linear interpolation.
+! ===========================================================================
+! Interpolation stuff
+
+
+!       call dcdt_nac (s, dc_na)
+! End Subroutine
+! ===========================================================================
+    return
+  end subroutine evolve_ks_state
+
+
+  subroutine dcdt_nac (s,nac_vars,nonac,eig,c_wf,dc_na )
+
+    
+    type(T_NAC_vars), intent(inout) :: nac_vars
+    type(T_structure), intent(in) :: s
+    
+    implicit none
+
+! Argument Declaration and Description
+! ===========================================================================
+! Input
+    real, dimension (nac_vars%ntransitions,nac_vars%ntransitions) :: nonac
+    real, dimension (nac_vars%ntransitions,nkpoints) :: eig
+    complex, dimension (nac_vars%ntransitions, nac_vars%ntransitions, s%nkpoints) :: c_wf
+
+
+! Output
+    complex, dimension (nac_vars%ntransitions, nac_vars%ntransitions, s%nkpoints) :: dc_na
+! Local Parameters and Data Declaration
+! ===========================================================================
+    real, parameter :: hbar = 0.6582119d0
+
+
+! Local Variable Declaration and Description
+! ===========================================================================
+    integer iatom
+    integer ix
+    integer ia
+    integer ik, ij
+    integer ikpoint
+    real, dimension (nele, nele) :: suma
+    complex, dimension (nele, nele, nkpoints) :: caux
+    complex aim
+    complex a0
+    complex a1
+    
+    real, dimension (3,natoms) :: v 
+    real, dimension (3,natoms,nele,nele) :: g 
+ 
+! Procedure
+! ===========================================================================
+! Non-adiabatic term: dot pruduct sum !calc with anal. g
+!         suma = 0.0d0
+!         do ik = 1, nele
+!          do ij = 1, nele
+!           do iatom = 1, natoms
+!            do ix = 1, 3
+!               suma(ik,ij) = suma(ik,ij) + v(ix,iatom)*g(ix,iatom,ik,ij)
+!            end do
+!           end do
+!          end do
+!         end do
+! Non-adiabatic term: sum over j 
+    caux = a0
+    do ikpoint = 1, s%nkpoints
+       do ia = 1, nac_vars%ntransitions
+          do ik = 1, nac_vars%ntransitions
+             do ij = 1, nac_vars%ntransitions
+                caux(ia,ik,ikpoint) = caux(ia,ik,ikpoint) + nonac(ik,ij)*c_wf(ia,ij,ikpoint)
+!           caux(ia,ik,ikpoint) = caux(ia,ik,ikpoint) + suma(ik,ij)*c_wf(ia,ij,ikpoint) !calc with anal. g
+             end do
+          end do
+       end do
+    end do
+! Calculate derivative d/dt c_na(t)
+    dc_na = a0
+    do ikpoint = 1, s%nkpoints
+       do ia = 1, nac_vars%ntransitions
+          do ik = 1, nac_vars%ntransitions
+             dc_na(ia,ik,ikpoint) = - eig(ik,ikpoint)*aim/hbar*c_wf(ia,ik,ikpoint)   &
+                  &     - caux(ia,ik,ikpoint)  
+! JOM-test
+!        dc_na(ia,ik,ikpoint) = - eig(ik,ikpoint)*aim/hbar*c_na(ia,ik,ikpoint)
+          end do
+       end do
+    end do
+
+
+! Format Statements
+! ===========================================================================
+! None
+
+! End Subroutine
+! ===========================================================================
+    return
+  end subroutine dcdt_nac
+
+ 
 
 
   subroutine fewest_switches(nac_vars,s, itime_step)
