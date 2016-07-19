@@ -283,7 +283,81 @@ contains
 !!$    ! Need to use the HDF5
 !!$
 !!$  end subroutine NAC_fileio
+  subroutine NAC_Tdensity(nac_vars, s)
+    implicit none
+    integer iband,jband
+    integer iatom,jatom
+    integer ineigh
+    integer in1,in2
+    integer mbeta
+    integer norb_nu,norb_mu
+    integer num_neigh
+    integer imu,inu
+    integer mmu,nnu
 
+    real gutr
+    
+    complex step1,step2
+
+    type(T_structure) , intent(in) :: s
+    type(T_NAC_vars) , intent(inout) :: nac_vars
+    
+    type(T_assemble_block), pointer :: pTRho_neighbors
+    type(T_assemble_neighbors), pointer :: pTdenmat
+
+! Loop over all atoms iatom in the unit cell, and then over all its neighbors.
+! Loop over the atoms in the central cell.
+        do iband = 1 , nac_vars%ntransitions
+           do jband = 1, nac_vars%ntransitions
+              do iatom = 1, s%natoms
+                 ! cut some lengthy notation
+                 pTdenmat => nac_vars%band(iband,jband)%Tdenmat(iatom)
+                 in1 = s%atom(iatom)%imass
+                 norb_mu = species(in1)%norb_max
+                 num_neigh = s%neighbors(iatom)%neighn
+                 allocate (pTdenmat%neighbors(num_neigh))
+
+! Loop over the neighbors of each iatom.
+                 do ineigh = 1, num_neigh  ! <==== loop over i's neighbors
+                    ! cut some more lengthy notation
+                    pTRho_neighbors=>pTdenmat%neighbors(ineigh)
+                    mbeta = s%neighbors(iatom)%neigh_b(ineigh)
+                    jatom = s%neighbors(iatom)%neigh_j(ineigh)
+                    in2 = s%atom(jatom)%imass
+                    
+! Allocate the block size
+                    norb_nu = species(in2)%norb_max
+                    allocate (pTRho_neighbors%block(norb_mu, norb_nu))
+                    
+! Loop over the special k points.
+
+! Here we assume that the coefficients are real only at this point.
+                    
+                    if (s%kpoints(1)%ioccupy(iband) .ne. 0) then
+                       do imu = 1, norb_mu
+                          mmu = imu + s%iblock_slot(iatom)
+                          step1 = conjg(s%kpoints(1)%c(mmu,iband))
+                          
+                          do inu = 1, norb_nu
+                             nnu = inu + s%iblock_slot(jatom)
+                             step2 = step1*s%kpoints(1)%c(nnu,iband)
+                             gutr = real(step2)
+                             
+                             ! Finally the density matrix:
+                             pTRho_neighbors%block(imu,inu) = gutr
+                             
+                          end do
+                       end do
+                    end if
+                    
+                    
+! Finish loop over atoms and neighbors.
+                 end do
+              end do
+           end do ! jband
+        end do ! iband
+
+  end subroutine NAC_Tdensity
 
   subroutine NAC_build_dij(nac_vars,s)
     type(T_NAC_vars), intent(inout) :: nac_vars
