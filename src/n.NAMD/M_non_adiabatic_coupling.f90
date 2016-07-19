@@ -17,6 +17,11 @@ module M_non_adiabatic_coupling
      real, allocatable :: dnac(:,:)
      real, allocatable :: dnac_old(:,:)
      complex, allocatable :: c_na(:,:,:)
+     integer allocatable :: ioccupy_na(:,:)   !< These can be sotred in a T_kpoint type for different kpoint, here we are only going to allocate for 1 kpoint
+     real allocatable :: foccupy_na(:,:)      !< These can be sotred in a T_kpoint type for different kpoint, here we are only going to allocate for 1 kpoint
+     integer allocatable :: ioccupy_na_TS(:,:)!< These can be sotred in a T_kpoint type for different kpoint, here we are only going to allocate for 1 kpoint 
+     real allocatable :: foccupy_na_TS(:,:)   !< These can be sotred in a T_kpoint type for different kpoint, here we are only going to allocate for 1 kpoint
+     real 
      type(T_forces), pointer :: dij(:,:,:)
      type(T_NAC_den), pointer :: band(:,:)
      type(T_vector), pointer :: ratom_old(:)
@@ -27,22 +32,33 @@ module M_non_adiabatic_coupling
 contains
 
   subroutine NAC_initialize(nac_vars, s)
+    
     implicit none
     !Arguments
     type(T_NAC_vars), intent(inout) :: nac_vars
-    type(T-structure), intent(in) :: s
+    type(T_structure), intent(in) :: s
 
     integer nac_inpfile
 
+    integer ntransitions
+    integer iatom
+    integer iele,jele
     integer istate
     integer stage
     integer iband
     integer :: ikpoint, iband
     integer :: nfermi
     integer numorb_max,norbitals
+    integer, allocatable :: iocc(:)
+    
+    real qcharge
+    real norm
+    
+    complex a0,a1,cnorm,caux
 
-    complex a0,a1
-
+    a0 = cmplx(0.0d0,0.0d0)
+    a1 = cmplx(1.0d0,0.0d0)
+    
     nac_inpfile = nac_vars%nac_inpfile
     open (unit = nac_inpfile, file = 'mdet.inp', status = 'old')
     ! Note : ntransitions is equal to nele in the old code
@@ -89,34 +105,124 @@ contains
     allocate (nac_vars%dnac_old(nac_vars%ntransitions, nac_vars%ntransitions))
    
  ! Need allocation for imdet = 2, deal with it later
-    allocate(nac_vars%c_na(nac_vars%ntransitions,nac_vars%ntransitions,nkpoints))
+    allocate(nac_vars%c_na(nac_vars%ntransitions,nac_vars%ntransitions,1))
     allocate(nac_vars%ratom_old(natoms))
     allocate(nac_vars%vatom_old(natoms))
 ! These three need modification, and they might be allocated at some othe place in density, check them again
     allocate(s%kpoints(1)%eigen_old(s%norbitals))
     allocate(s%kpoints(1)%eigen(s%norbitals))
     allocate(s%kpoints(1)%c_Lowdin(s%norbitals,s%norbitals))
-    allocate(nac_vars%eigen_1(nac_vars%ntransitions,nkpoints))
-    allocate(nac_vars%eigen_0(nac_vars%ntransitions,nkpoints))
-    ! MOved from M_density_MDET.f90 to here
+    allocate(nac_vars%eigen_1(nac_vars%ntransitions,1))
+    allocate(nac_vars%eigen_0(nac_vars%ntransitions,1))
+! allocating foccupy and ioccupy
+    allocate(nac_vars%ioccupy_na(s%norbitals,1))
+    allocate(nac_vars%foccupy_na(s%norbitals,1))
+    allocate(nac_vars%ioccupy_na_TS(s%norbitals,1))
+    allocate(nac_vars%foccupy_na_TS(s%norbitals,1))
+! Initializing the occupation numbers
+    nac_vars%ioccupy_na = 0
+    nac_vars%foccupy_na = 0.0d0
+    
+    nac_vars%ioccupy_na_TS = 0
+    nac_vars%foccupy_na_TS = 0.0d0
 
     nfermi = int(s%ztot) / 2
 
    
     do iband = 1, nfermi
-       nac_vars%foccupy_na (iband,ikpoint) = 1.0d0
-       nac_vars%ioccupy_na (iband, ikpoint) = 2
-       nac_vars%foccupy_na_TS (iband,ikpoint) = 1.0d0
-       nac_vars%ioccupy_na_TS (iband, ikpoint) = 2
+       nac_vars%foccupy_na (iband,1) = 1.0d0
+       nac_vars%ioccupy_na (iband, 1) = 2
+       nac_vars%foccupy_na_TS (iband,1) = 1.0d0
+       nac_vars%ioccupy_na_TS (iband, 1) = 2
     end do
     if (int(qztot) .gt. 2*nfermi) then
-       do ikpoint = 1, nkpoints
-          nac_vars%ioccupy_na(nfermi+1,ikpoint) = 1
-          nac_vars%foccupy_na (iband,ikpoint) = 0.5d0
-          nac_vars%ioccupy_na_TS(nfermi+1,ikpoint) = 1
-          nac_vars%foccupy_na_TS (iband,ikpoint) = 0.5d0
-       end do
+       nac_vars%ioccupy_na(nfermi+1,1) = 1
+       nac_vars%foccupy_na (iband,1) = 0.5d0
+       nac_vars%ioccupy_na_TS(nfermi+1,1) = 1
+       nac_vars%foccupy_na_TS (iband,1) = 0.5d0
     end if
+
+    qcharge = 0.0d0
+    do iband = 1, s%norbitals
+       if (nac_vars%ioccupy_na(iband,1) .ne. 0) then
+          qcharge = qcharge + 2.0d0*nac_vars%foccupy_na(iband,1)
+       end if
+    end do
+    if (abs(qcharge - s%ztot) .gt. tol) then
+       write(ilogfile,*) '          qcharge = ', qcharge
+       write (*,*) '          qztot = ', s%ztot
+       write (*,*) 'must stop in subroutine init_mdet 1'
+       stop
+    end if
+
+! Now, initialize the electronic states (c_na)
+        
+!       we must define the set of eigenstates for which we are going to
+!       follow their time-evolution via the c_na(t)
+!       for example:
+        
+        
+    c_na = a0
+    do iband = 1, ntransitions
+       c_na (iband, iband, 1) = a1
+!       write(*,*)'c_na',iband,c_na (iband, iband, ikpoint)
+    end do
+    
+ 
+! check Normalization !
+    do iband = 1, ntransitions
+       cnorm = a0
+       do jband = 1, ntransitions
+          caux =c_na(iband,jband,1)
+          cnorm = cnorm + caux*conjg(caux)
+       end do
+       norm = cabs (cnorm)
+       write(*,*)'Norm of initial states',iband, norm
+    end do
+    
+        
+! change occupations using mdet.input values  (iocc(iele))        
+    do iele = 1, ntransitions
+       iband = nac_vars%map_ks(iele)
+       nac_vars%foccupy_na(iband,1) = iocc(iele)*0.5d0
+       nac_vars%ioccupy_na(iband,1) = iocc(iele)
+       nac_vars%foccupy_na_TS(iband,1) = iocc(iele)*0.5d0
+       nac_vars%ioccupy_na_TS(iband,1) = iocc(iele)
+    end do
+
+! check
+    qcharge = 0.0d0
+    do iband = 1, s%norbitals
+       if (ioccupy_na(iband,1) .ne. 0) then
+          qcharge = qcharge + 2.0d0*nac_vars%foccupy_na(iband,1)
+       end if
+    end do
+    if (abs(qcharge - qztot) .gt. tol) then
+         write(ilogfile,*) '          qcharge = ', qcharge
+         write(ilogfile,*) '          qztot = ', qztot
+         write(ilogfile,*) 'must stop in subroutine init_mdet 2'
+       stop
+    end if
+
+!--------------------------------------------------------------------
+! write
+    do iele = 1, ntransitions
+       write(*,*)'map_ks',iele,nac_vars%map_ks(iele)
+    end do
+    do iband = 1, s%norbitals
+       write(*,*)'foccupy',iband,nac-vars%ioccupy_na(iband,1),nac_vars%foccupy_na(iband,1)
+    end do
+    do iele = 1, ntransitions
+       do jele = 1, ntransitions
+          write(*,*)'c_na',iele,jele,nac_vars%c_na (iele, jele, 1) !there is no need to print this out
+       end do
+    end do
+
+    
+
+        
+    
+    
 
     call NAC_io(n, stage)
 
@@ -131,91 +237,52 @@ contains
   end subroutine NAC_finalize
 
 
-  subroutine NAC_io(n, stage)
-
-    implicit none
-    type(T_NAC_vars), intent(inout) :: n
-    integer :: stage
-
-    if (stage == 1) then
-       write(*,*) 'ilogfile', ilogfile
-
-       write (ilogfile,*)
-       write (ilogfile,*) ' Reading: mdet.inp '
-       write (ilogfile,*) ' Number of transitions', n%ntransitions
-
-    else if (stage == 'degenerate bands') then
-      write(ilogfile,*)'TWO EIGENVALUES VERY CLOSE'
-      write(ilogfile,*)'band', iband, eigen_k(map_ks(iband),ikpoint)
-      write(ilogfile,*)'band', jband, eigen_k(map_ks(jband),ikpoint)
-      write(ilogfile,*)'The nonadiabatic coupling is'
-      write(ilogfile,*)'NOT CALCULATED'
-    end if
-    !        if (stage == 2) then
-    !            write (ilogfile,*)
-    !            write (ilogfile,*)'Call SCF_LOOP'
-    !        end if
-    !        if (stage == 3) then
-    !            write (ilogfile,*)
-    !            write (ilogfile,8)'Call getenery'
-
-
-
-
-
-    !         write(*,*) 'The value of the elemnt (', i, i,') is:', this%m(i,i)
-
-
-    ! Here you print on screen or ilogfile information about your MD
-
-  end subroutine NAC_io
-
-
-  subroutine NAC_fileio
-    ! Here you should write info in those files  with massive data
-    ! They should be written on HDF5, I will teach you this later
-    ! Need to use the HDF5
-
-  end subroutine NAC_fileio
-
-  subroutine NAC_change_occupations(nac_vars)
-    type(T_NAC_vars), intent(out) :: nac_vars
-
-    integer ikpoint, iele, iband
-
-    do ikpoint = 1, nac_vars%nkpoints
-       do iele = 1, nac_vars%ntransitions
-          iband = nac_vars%map_ks(iele)
-          nac_vars%foccupy_na(iband,ikpoint) = nac_vars%iocc(iele)*0.5d0
-          nac_vars%ioccupy_na(iband,ikpoint) = nac_vars%iocc(iele)
-          nac_vars%foccupy_na_TS(iband,ikpoint) = nac_vars%iocc(iele)*0.5d0
-          nac_vars%ioccupy_na_TS(iband,ikpoint) = nac_vars%iocc(iele)
-       end do
-    end do
-
-  end subroutine NAC_change_occupations
-
-  subroutine NAC_density_check(this, s)
-    type(T_density_MDET), intent(out) :: this
-    type(T_structure), intent(in) :: s
-    real :: qcharge = 0.0d0
-    integer :: ikpoint, iband
-
-    do ikpoint = 1, this%nkpoints
-       do iband = 1, this%norbitals
-          if (ioccupy_na(iband,ikpoint) .ne. 0) then
-             qcharge = qcharge + 2.0d0*foccupy_na(iband,ikpoint)*s%kpoints(ikpoint)%weight
-          end if
-       end do
-    end do
-    if (abs(qcharge - this%qztot) .gt. tol) then
-       write (*,*) '          qcharge = ', qcharge
-       write (*,*) '          qztot = ', this%qztot
-       write (*,*) 'must stop in subroutine init_mdet 1'
-       stop
-    end if
-
-  end subroutine NAC_density_check
+!!$  subroutine NAC_io(n, stage)
+!!$
+!!$    implicit none
+!!$    type(T_NAC_vars), intent(inout) :: n
+!!$    integer :: stage
+!!$
+!!$    if (stage == 1) then
+!!$         write(ilogfile,*) 'ilogfile', ilogfile
+!!$
+!!$       write (ilogfile,*)
+!!$       write (ilogfile,*) ' Reading: mdet.inp '
+!!$       write (ilogfile,*) ' Number of transitions', n%ntransitions
+!!$
+!!$    else if (stage == 'degenerate bands') then
+!!$      write(ilogfile,*)'TWO EIGENVALUES VERY CLOSE'
+!!$      write(ilogfile,*)'band', iband, eigen_k(map_ks(iband),ikpoint)
+!!$      write(ilogfile,*)'band', jband, eigen_k(map_ks(jband),ikpoint)
+!!$      write(ilogfile,*)'The nonadiabatic coupling is'
+!!$      write(ilogfile,*)'NOT CALCULATED'
+!!$    end if
+!!$    !        if (stage == 2) then
+!!$    !            write (ilogfile,*)
+!!$    !            write (ilogfile,*)'Call SCF_LOOP'
+!!$    !        end if
+!!$    !        if (stage == 3) then
+!!$    !            write (ilogfile,*)
+!!$    !            write (ilogfile,8)'Call getenery'
+!!$
+!!$
+!!$
+!!$
+!!$
+!!$    !           write(ilogfile,*) 'The value of the elemnt (', i, i,') is:', this%m(i,i)
+!!$
+!!$
+!!$    ! Here you print on screen or ilogfile information about your MD
+!!$
+!!$  end subroutine NAC_io
+!!$
+!!$
+!!$  subroutine NAC_fileio
+!!$    ! Here you should write info in those files  with massive data
+!!$    ! They should be written on HDF5, I will teach you this later
+!!$    ! Need to use the HDF5
+!!$
+!!$  end subroutine NAC_fileio
 
 
   subroutine NAC_build_dij(nac_vars,s)
@@ -836,12 +903,12 @@ contains
    type(T_structure), intent(in) :: s
    type(T_species), intent(in) :: species(:)
    
-   call ovelap_numeric(nac_vars,s,itime_step,species) ! I think this should not be in this subroutine it should be called from the main loop
+   call NAterm_numeric(nac_vars,s,itime_step,species) ! I think this should not be in this subroutine it should be called from the main loop
    do iband = 1, nac_vars%ntransitions
-      if (nac_vars(iband,iband) .lt. -0.1) then
+      if (nac_vars%sumb(iband,iband) .lt. -0.1) then
          ! I have commented the write part this should be moved to the io subroutine
-         !            write (*,*) 'The arbitrary sign of wavefunctions of this and previous time step are different'
-         !            write (*,*) 'We will change the sign in order to have the same sign in all time steps!!'
+                       write(ilogfile,*) 'The arbitrary sign of wavefunctions of this and previous time step are different'
+                       write(ilogfile,*) 'We will change the sign in order to have the same sign in all time steps!!'
          do iorbital = 1 , s%norbitals
             s%kpoints(1)%c(iorbital,nac_vars%map_ks(iband)) = - s%kpoints(1)%c(iorbital,nac_vars%map_ks(iband))
          end do
@@ -849,7 +916,7 @@ contains
    end do
  end subroutine overlap_sign
 
- subroutine overlap_numeric(nac_vars, s , itime_step, species)
+ subroutine NAterm_numeric(nac_vars, s , itime_step, species)
     implicit none 
     include '../include/interactions_2c.h'
     integer it
@@ -860,14 +927,16 @@ contains
     integer ix
     integer ia
     integer ik,ij
+    integer ispecies
     integer num_neigh                   !< number of neighbors
     integer mbeta                       !< the cell containing iatom's neighbor
-    
+    integer tot_norb_max
     integer norb_mu, norb_nu         !< size of the block for the pair
 
     real z                           !< distance between r1 and r2
     real diff
     real delta
+    real range 
 
     real, dimension (3) :: eta        !< vector part of epsilon eps(:,3)
     real, dimension (3, 3) :: eps     !< the epsilon matrix
@@ -877,8 +946,8 @@ contains
     real, dimension (nac_vars%ntransitions, nac_vars%ntransitions) :: suma, sumb
     real y, rcutoff_i, rcutoff_j, range
     real, dimension(s%norbitals,s%norbitals) :: sover
-    real, dimension(numorb_max,numorb_max) :: sm ! need to find the numorb_max
-    real, dimension(3,numorb_max,numorb_max) :: sx ! need to find the numorb_max in the new fireball or change the whole method
+    real, allocatable :: sm (:,:)  ! need to find the numorb_max
+    real, allocatable :: sx (:,:,:)! need to find the numorb_max in the new fireball or change the whole method
 
     interface
        function distance (a, b)
@@ -894,7 +963,12 @@ contains
     type(T_assemble_block), pointer :: pS_neighbors
     type(T_assemble_neighbors), pointer :: poverlap
 
-
+    tot_norb_max = -1
+    do ispecies = 1, nspecies
+       tot_norb_max = max(tot_norb_max , species(ispecies)%norb_max)
+    end do ! ispecies
+    allocate(sm(tot_norb_max,tot_norb_max))
+    allocate(sx(3,tot_norb_max,tot_norb_max))
     do iatom = 1, s%natoms
        r1 = nac_vars%ratom_old(iatom)%a
        rcutoff_i = 0.0d0
@@ -962,10 +1036,18 @@ contains
           nac_vars%dnac(ik,ij) = ((nac_vars%sumb(ik,ij)) - nac_vars%sumb(ij,ik))/(2.0d0*dt)
        end do
     end do
+  end subroutine NAterm_numeric
 
 
+  subroutine NAterm_analytic(nac_vars,s)
 ! analytical method, this can be added as an option, suma(ik,ij)= dij.V , 
-    delta = 0.5d0
+    integer ik,ij,ix
+    integer iatom
+    real r1,r2,v
+
+    type(T_NAC_vars), intent(inout) :: nac_vars
+    type(T_structure), intent(in) :: s
+
     nac_vars%suma = 0.0d0
     do ik = 1 , nac_vars%ntransitions
        do ij = 1 , nac_vars%ntransitions
@@ -980,7 +1062,7 @@ contains
        end do
     end do    
  
-  end subroutine overlap_numeric
+  end subroutine NAterm_analytic
   
   subroutine evolve_ks_state(nac_vars,den_vars,s)
 
@@ -988,8 +1070,8 @@ contains
   
 
 
-  subroutine FSSH(nac_vars,s, itime_step)
-    integer ij, ik, iswitch
+  subroutine fewest_switches(nac_vars,s, itime_step)
+    integer ij, ik, iswitch,itime_step
     real xrand, aux, ajj, bkj
     complex akj
     real, dimansion(nac%vars) :: prob
@@ -1014,7 +1096,7 @@ contains
 !----------------------------------------------------------
 ! probability of the jband ---> kband transition
           prob(ik) = bkj*dt/ajj
-          write(*,*)'prob',ij,ik,prob(ik) ! move this to io subroutine
+            write(ilogfile,*)'prob',ij,ik,prob(ik) ! move this to io subroutine
           if (prob(ik) .lt. 0.0d0) then
              prob(ik) = 0.0d0
           end if
@@ -1029,7 +1111,7 @@ contains
        call mc_switch (xrand, nac_vars%ntransitions, prob, ij, iswitch)
        
        if (iswitch .ne. 0) then
-          write(*,*)'SWITCH!!',ij, '--->',iswitch ! move it to NACio
+            write(ilogfile,*)'SWITCH!!',ij, '--->',iswitch ! move it to NACio
 !----------------------------------------------------------
 ! perform transition ij ---> iswitch
          call transition (itime_step, ij, iswitch, ikpoint)   
@@ -1038,7 +1120,7 @@ contains
       end if
    end do ! ij
  
- end subroutine FSSH
+ end subroutine FEWEST_SWITCHES
 
  subroutine mc_switch(xr, ntransitions, prob, ij, is) 
    integer ij,is,ntransitions
@@ -1062,15 +1144,15 @@ contains
       end if
    end do
    if (aux .gt. 1.0d0) then ! this might never happen and move the write to NACio
-      write(*,*)'sum of probabilities greater than 1'
-      write(*,*)'in mc_switches.f90'
-      write(*,*)'total probabilty', aux
-      write(*,*)'for state', ij
-      do ik = 1, n
-         write(*,*)'prob',ik,prob(k)
-      end do
-              write(*,*)'must stop' ! this was commented in the old code!! don't know why.
-              stop
+        write(ilogfile,*)'sum of probabilities greater than 1'
+        write(ilogfile,*)'in mc_switches.f90'
+        write(ilogfile,*)'total probabilty', aux
+        write(ilogfile,*)'for state', ij
+      do ik = 1, ntransitions
+           write(ilogfile,*)'prob',ik,prob(ik)
+        end do
+      write(ilogfile,*)'must stop' ! this was commented in the old code!! don't know why.
+      stop
    end if
    is = 0 
    aux = 0.0d0
@@ -1080,11 +1162,11 @@ contains
       kband = map_ks(ik)
       if (nac_vars%ioccupy_na(jband,1) .gt. 0) then     
           if (nac_vars%ioccupy_na(kband,1) .lt. 2) then    
-             aux = aux + pr(ik)
+             aux = aux + prob(ik)
              if (aux .gt. xr) then
                 is = ik
                 do ij = 1, ntransition
-                   write(*,*)'prob',ij,prob(ij)
+                     write(ilogfile,*)'prob',ij,prob(ij)
                 end do
                 exit
              end if
@@ -1104,6 +1186,7 @@ subroutine transition(itime_step, ij,is,s,nac_vars) ! there are 3 subroutine in 
   
   integer jband, kband
   integer iatom,ix
+  integer in1
   real ejump, ener
   real aa,bb,cc
   real alpha
@@ -1112,18 +1195,21 @@ subroutine transition(itime_step, ij,is,s,nac_vars) ! there are 3 subroutine in 
   real, parameter :: tolaa = 1.0d-8
   ! introduce the pointers
 
+  real, pointer :: pdij(3)
+  real, pointer :: pvatom(3)
+  
 
   jband = nac_vars%map_ks(ij)
   kband = nac_vars%map_ks(is)
-  s%kpoints(1)%foccupy(jband) = s%kpoints(1)%ioccupy(jband) - 1
-  s%kpoints(1)%foccupy(jband) = s%kpoints(1)%foccupy(jband) - 0.50d0
-  s%kpoints(1)%ioccupy(kband) = s%kpoints(1)%ioccupy(kband) + 1
-  s%kpoints(1)%foccupy(kband) = s%kpoints(1)%foccupy(kband) + 0.50d0
+  nac_vars%ioccupy_na(jband,1) = nac_vars%ioccupy_na(jband,1) - 1
+  nac_vars%foccupy_na(jband,1) = nac_vars%foccupy_na(jband,1) - 0.50d0
+  nac_vars%ioccupy_na(kband,1) = nac_vars%ioccupy_na(kband,1) + 1
+  nac_vars%foccupy_na(kband,1) = nac_vars%ioccupy_na(kband,1) + 0.50d0
 
   ejump = s%kpoints(1)%eigen(kband) - s%kpoints(1)%eigen(jband)
-  write(*,*)'ejump (eV) =', ejump  ! move this to NACio
+    write(ilogfile,*)'ejump (eV) =', ejump  ! move this to NACio
   ener = ejump*P_fovermp
-  write(*,*)'ener (dynamical units)=', ener ! move this to NACio
+    write(ilogfile,*)'ener (dynamical units)=', ener ! move this to NACio
 ! ===========================================================================
 ! Find out if transition ij --> is is accesible (i.e. if there is enough
 ! kinetic energy 
@@ -1143,16 +1229,16 @@ subroutine transition(itime_step, ij,is,s,nac_vars) ! there are 3 subroutine in 
      end do ! ix
   end do ! iatom
 !----------------------------------------------------------
-  write(*,*)'aa, 4*ener*aa =', aa, 4.0d0*aa*ener ! move to NACio
-  write(*,*)'bb, bb**2=', bb, bb**2 ! move to NACio
+    write(ilogfile,*)'aa, 4*ener*aa =', aa, 4.0d0*aa*ener ! move to NACio
+    write(ilogfile,*)'bb, bb**2=', bb, bb**2 ! move to NACio
   cc = bb**2 - 4.0d0*aa*ener
-  write(*,*)'cc=', cc !Move to NACio
+    write(ilogfile,*)'cc=', cc !Move to NACio
 ! ===========================================================================
   if (aa .gt. tolaa) then
 !----------------------------------------------------------
 ! the transition is accepted
      if (cc .ge. 0.0d0) then
-        write(*,*)'transition accepted'
+          write(ilogfile,*)'transition accepted'
 !----------------------------------------------------------
         if (bb .ge. 0.0d0) then
            alfa = (bb - sqrt(cc))/(2.0d0*aa)
@@ -1162,7 +1248,7 @@ subroutine transition(itime_step, ij,is,s,nac_vars) ! there are 3 subroutine in 
 !----------------------------------------------------------
      else !(cc .ge. 0.0d0)
 ! the transition is NOT accepted
-        write(*,*)'transition NOT accepted' ! Move to NACio
+          write(ilogfile,*)'transition NOT accepted' ! Move to NACio
 !----------------------------------------------------------
         s%kpoints(1)%foccupy(jband) = s%kpoints(1)%ioccupy(jband) + 1
         s%kpoints(1)%foccupy(jband) = s%kpoints(1)%foccupy(jband) + 0.50d0
@@ -1177,10 +1263,10 @@ subroutine transition(itime_step, ij,is,s,nac_vars) ! there are 3 subroutine in 
   else  !(aa .gt. tolaa)
      alfa = 0.0d0
   end if  !(aa .gt. tolaa)
-  write(*,*)'alfa=', alfa ! move to NACio
+    write(ilogfile,*)'alfa=', alfa ! move to NACio
 ! ===========================================================================
   do iatom = 1 , s%natoms
-     write(*,*)'vatom-B',  (s%atom(iatom)%vatom(ix) , ix = 1,3)
+       write(ilogfile,*)'vatom-B',  (s%atom(iatom)%vatom(ix) , ix = 1,3)
   end do
 !----------------------------------------------------------
   tkinetic = 0.0d0
@@ -1193,7 +1279,7 @@ subroutine transition(itime_step, ij,is,s,nac_vars) ! there are 3 subroutine in 
           &       + (0.5d0/P_fovermp)*xm                             &
           &      *(pvatom(1)**2 + pvatom(2)**2 + pvatom(3)**2)
   end do
-  write(*,*)'KINETIC=',tkinetic ! move to NACio
+    write(ilogfile,*)'KINETIC=',tkinetic ! move to NACio
 !----------------------------------------------------------
 
 !----------------------------------------------------------
@@ -1211,7 +1297,7 @@ subroutine transition(itime_step, ij,is,s,nac_vars) ! there are 3 subroutine in 
 !----------------------------------------------------------
 !----------------------------------------------------------
   do iatom = 1, s%natoms
-     write(*,*)'vatom-A',  (s%atom(iatom)%vatom (ix), ix = 1,3)
+       write(ilogfile,*)'vatom-A',  (s%atom(iatom)%vatom (ix), ix = 1,3)
   end do
 !----------------------------------------------------------
 !----------------------------------------------------------
@@ -1225,7 +1311,7 @@ subroutine transition(itime_step, ij,is,s,nac_vars) ! there are 3 subroutine in 
           &       + (0.5d0/P_fovermp)*xm                             &
           &      *(pvatom(1)**2 + pvatom(2)**2 + pvatom(3)**2)
   end do
-  write(*,*)'KINETIC=',tkinetic ! move to NACio
+    write(ilogfile,*)'KINETIC=',tkinetic ! move to NACio
 
 
 
@@ -1255,53 +1341,7 @@ end subroutine transition
 
   !        end subroutine NAC_do_something2
 
-  subroutine find_neigh_max_NAC(s,neigh_max, neighPP_max) !< this should not be here but we need it for allocating gh arrays, we can change it later
 
-  type(T_structure), intent(in) :: s
-  integer neigh_max,neighPP_max ,iatom
-
-  neigh_max = -99
-  do iatom = 1, s%natoms
-    neigh_max = max(neigh_max,size(s%neighbors(iatom)%neigh_j))
-  end do
-  do iatom = 1, s%natoms
-    neighPP_max = max(neigh_max, size(s%neighbors_PP(iatom)%neigh_j))
-  end do
-
-  end subroutine find_neigh_max_NAC
-
-
-  subroutine NAC_normalization(this, nkpoints)
-    type(T_NAC_vars), intent(inout) :: this
-
-    complex :: a0 = cmplx(0.0d0,0.0d0)
-    complex :: a1 = cmplx(1.0d0,0.0d0)
-    complex :: cnorm, caux
-    integer :: ikpoint, iele, jele, nkpoints
-    real :: norm
-
-    this%c_na = a0
-    do ikpoint = 1, nkpoints
-       do iele = 1, this%ntransitions
-          this%c_na (iele, iele, ikpoint) = a1
-          !       write(*,*)'c_na',iband,c_na (iband, iband, ikpoint)
-       end do
-    end do
-
-    ! check Normalization !
-    do ikpoint = 1, nkpoints
-       do iele = 1, this%ntransitions
-          cnorm = a0
-          do jele = 1, this%ntransitions
-             caux = this%c_na(iele,jele,ikpoint)
-             cnorm = cnorm + caux*conjg(caux)
-          end do
-          norm = cabs (cnorm)
-          write(*,*)'Norm of initial states',iele, norm
-       end do
-    end do
-
-  end subroutine NAC_normalization
 
 
 end module M_non_adiabatic_coupling
